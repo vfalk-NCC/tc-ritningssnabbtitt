@@ -1,8 +1,7 @@
 {
-  "id": "com.vfalk.ritningssnabbtitt",
-  "name": "Ritningssnabbtitt",
-  "description": "Snabbtitt pa kopplade ritningar och bilder vid objektklick, med markup (frihand, text, pratbubbla, matt) som sparas mot Trimble Connect.",
-  "version": "0.1.0",
-
-  "url": "https://vfalk-ncc.github.io/tc-ritningssnabbtitt/tc-ritningssnabbtitt-index.html"
+"url": "https://vfalk-ncc.github.io/tc-ritningssnabbtitt/tc-ritningssnabbtitt-index.html",
+"title": "Ritningssnabbtitt",
+"icon": "https://vfalk-ncc.github.io/tc-ritningssnabbtitt/icon.png",
+"description": "Snabbtitt pa kopplade ritningar och bilder vid objektklick, med markup (frihand, text, pratbubbla, matt) som sparas mot Trimble Connect.",
+"extensionType": ["3dviewer"]
 }
