@@ -518,32 +518,153 @@ async function downloadAttachmentBlob(fileId, versionId, format){
 }
 
 /* ---------------------------------------------------------------------
-   VERIFIERA — markup-persistens som EGEN attachment/blob-fil.
-   Enligt vad vi kom överens om: markup (anteckningar + ev. kalibrering)
-   sparas som en dold companion-fil (t.ex. "<ritningsnamn>.markup.json")
-   länkad till samma objekt/fil via Object Links, INTE som kommentar.
+   Skapa/ladda upp nya filer i TC och länka dem till objekt.
+   Bekräftat mot Trimbles officiella OpenAPI-spec (Core API 2.0,
+   SwaggerHub: Trimble-Connect/tcps/2.0):
+   - POST /files/fs/upload?parentId=&parentType=FOLDER {name} ->
+     {uploadId, contents:[{url}]}  (url = presignad PUT-länk, inga
+     extra headers ska skickas — därför skickas rå ArrayBuffer nedan,
+     inte en Blob, så fetch inte lägger till en egen Content-Type).
+   - PUT <url> med filens bytes.
+   - POST /files/fs/commit {uploadId} -> {fileId, versionId, status}
+     (pollar /files/fs/uploadstatus om status inte är klar direkt).
+   - POST /objectlink {source:{versionId, data:[{type:"BIMOBJECT",
+     sourceId}]}, target:{type:"FILE", id}} skapar själva länken
+     mellan 3D-objektet och filen.
+   --------------------------------------------------------------------- */
+const TC_DATA_FOLDER_NAME = "Ritningssnabbtitt-data";
+let _dataFolderIdCache = null;
+let _dataFolderIdCacheProjectId = null;
 
-   Två saker måste verifieras innan detta funkar skarpt:
-   1. Uppladdnings-endpointen för att skapa/uppdatera en fil i projektets
-      filträd (troligen POST/PUT mot /files eller /folders/{id}/files).
-   2. Hur en ny fil länkas till samma objekt via Object Links (troligen
-      samma resurs som getAttachmentsForObject läser från, fast POST).
+async function ensureDataFolder(){
+  const projectId = tcProject?.id;
+  if(!projectId) throw new Error("Inget projekt-id — kan inte hitta/skapa datamapp.");
+  if(_dataFolderIdCache && _dataFolderIdCacheProjectId === projectId) return _dataFolderIdCache;
+
+  const project = await tcFetchJson(`/projects/${projectId}`);
+  const rootId = project.rootId;
+  if(!rootId) throw new Error("Kunde inte hitta projektets rotmapp (rootId).");
+
+  const items = await tcFetchJson(`/folders/${rootId}/items`);
+  const list = Array.isArray(items) ? items : items?.items || [];
+  const existing = list.find(it => it.type === "FOLDER" && it.name === TC_DATA_FOLDER_NAME);
+  if(existing){
+    _dataFolderIdCache = existing.id;
+    _dataFolderIdCacheProjectId = projectId;
+    return existing.id;
+  }
+
+  const res = await fetch(tcApiUrl(`/folders`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: TC_DATA_FOLDER_NAME, parentId: rootId }),
+  });
+  if(!res.ok) throw new Error(`Kunde inte skapa datamapp (${res.status})`);
+  const folder = await res.json();
+  _dataFolderIdCache = folder.id;
+  _dataFolderIdCacheProjectId = projectId;
+  return folder.id;
+}
+
+async function uploadFileToFolder(folderId, filename, blob){
+  const initRes = await fetch(tcApiUrl(`/files/fs/upload?parentId=${encodeURIComponent(folderId)}&parentType=FOLDER`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: filename }),
+  });
+  if(!initRes.ok) throw new Error(`Kunde inte initiera uppladdning (${initRes.status})`);
+  const initData = await initRes.json();
+  const uploadId = initData.uploadId;
+  const putUrl = initData.contents?.[0]?.url;
+  if(!uploadId || !putUrl) throw new Error("Ofullständigt svar från uppladdnings-initiering.");
+
+  const bytes = await blob.arrayBuffer();
+  const putRes = await fetch(putUrl, { method: "PUT", body: bytes });
+  if(!putRes.ok) throw new Error(`Filöverföring misslyckades (${putRes.status})`);
+
+  const commitRes = await fetch(tcApiUrl(`/files/fs/commit`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ uploadId }),
+  });
+  if(!commitRes.ok) throw new Error(`Kunde inte slutföra uppladdning (${commitRes.status})`);
+  let result = await commitRes.json();
+
+  for(let i=0; i<10 && result.status && result.status !== "DONE" && result.status !== "ERROR"; i++){
+    await new Promise(r => setTimeout(r, 800));
+    result = await tcFetchJson(`/files/fs/uploadstatus?uploadId=${encodeURIComponent(uploadId)}`);
+  }
+  if(result.status === "ERROR") throw new Error(`Uppladdning misslyckades: ${result.errorReason || "okänt fel"}`);
+  if(!result.fileId) throw new Error("Fick inget fileId tillbaka efter uppladdning.");
+  return { fileId: result.fileId, versionId: result.versionId };
+}
+
+async function createObjectLink(modelId, guid, fileId){
+  const res = await fetch(tcApiUrl(`/objectlink`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source: { versionId: modelId, data: [{ type: "BIMOBJECT", sourceId: guid }] },
+      target: { type: "FILE", id: fileId },
+    }),
+  });
+  if(!res.ok) throw new Error(`Kunde inte skapa Object Link (${res.status})`);
+  return await res.json();
+}
+
+async function deleteObjectLink(linkId){
+  try{
+    await fetch(tcApiUrl(`/objectlink/${linkId}`), { method: "DELETE", headers: { Authorization: `Bearer ${tcAccessToken}` } });
+  }catch(err){ console.warn("[TC] kunde inte ta bort gammal Object Link:", err); }
+}
+
+async function deleteFile(fileId){
+  try{
+    await fetch(tcApiUrl(`/files/${fileId}`), { method: "DELETE", headers: { Authorization: `Bearer ${tcAccessToken}` } });
+  }catch(err){ console.warn("[TC] kunde inte ta bort gammal fil:", err); }
+}
+
+async function listObjectFileLinks(modelId, guid){
+  const qs = new URLSearchParams({ versionId: modelId, sourceId: guid, detail: "true" });
+  const links = await tcFetchJson(`/objectlink?${qs.toString()}`);
+  const arr = Array.isArray(links) ? links : links?.items || [];
+  return arr.filter(l => l.target?.type === "FILE" && l.target?.id);
+}
+
+/* ---------------------------------------------------------------------
+   Markup-persistens som egen companion-fil ("<ritnings/bild-id>.markup.json"),
+   länkad till samma 3D-objekt via Object Links (inte som kommentar).
+   Ingen "uppdatera fil"-endpoint används — varje sparning laddar upp en
+   ny fil + länk och städar bort en ev. tidigare markup-fil för samma
+   ritning/bild.
    --------------------------------------------------------------------- */
 async function tcSaveMarkupBlob(drawingId, data){
   if(!tcAccessToken){
     if(TC_CONFIG.MOCK_FALLBACK) return mockSaveMarkupBlob(drawingId, data);
     throw new Error("Ingen access token.");
   }
-  // VERIFIERA hela denna funktion mot er miljö.
-  const region = tcProject?.region || "app";
+  if(!currentSelection?.modelId || !currentSelection?.guid){
+    throw new Error("Inget valt objekt — kan inte spara markup.");
+  }
   const companionName = `${drawingId}.markup.json`;
-  const url = `https://${region}.connect.trimble.com/tc/api/2.0/files/${drawingId}/markup`; // VERIFIERA endpoint
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if(!res.ok) throw new Error(`Kunde inte spara markup (${res.status})`);
+  const folderId = await ensureDataFolder();
+
+  try{
+    const existingLinks = await listObjectFileLinks(currentSelection.modelId, currentSelection.guid);
+    for(const l of existingLinks){
+      const name = l.target?.name || (await tcFetchJson(`/files/${l.target.id}`).catch(()=>null))?.name;
+      if(name === companionName){
+        await deleteObjectLink(l.id);
+        await deleteFile(l.target.id);
+      }
+    }
+  }catch(err){
+    console.warn("[TC] kunde inte städa bort gammal markup-fil:", err);
+  }
+
+  const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+  const { fileId } = await uploadFileToFolder(folderId, companionName, blob);
+  await createObjectLink(currentSelection.modelId, currentSelection.guid, fileId);
 }
 
 async function tcLoadMarkupBlob(drawingId){
@@ -551,25 +672,46 @@ async function tcLoadMarkupBlob(drawingId){
     if(TC_CONFIG.MOCK_FALLBACK) return mockLoadMarkupBlob(drawingId);
     throw new Error("Ingen access token.");
   }
-  const region = tcProject?.region || "app";
-  const url = `https://${region}.connect.trimble.com/tc/api/2.0/files/${drawingId}/markup`; // VERIFIERA endpoint
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${tcAccessToken}` } });
-  if(res.status === 404) return { items: [], scale: null };
-  if(!res.ok) throw new Error(`Kunde inte läsa markup (${res.status})`);
-  return await res.json();
+  if(!currentSelection?.modelId || !currentSelection?.guid){
+    return { items: [], scale: null };
+  }
+  const companionName = `${drawingId}.markup.json`;
+  try{
+    const links = await listObjectFileLinks(currentSelection.modelId, currentSelection.guid);
+    for(const l of links){
+      const meta = await tcFetchJson(`/files/${l.target.id}`).catch(()=>null);
+      if(meta?.name === companionName){
+        const blob = await downloadAttachmentBlob(l.target.id, meta.versionId);
+        if(blob) return JSON.parse(await blob.text());
+      }
+    }
+  }catch(err){
+    console.warn("[TC] kunde inte läsa sparad markup:", err);
+  }
+  return { items: [], scale: null };
 }
 
 /* ---------------------------------------------------------------------
-   VERIFIERA — ladda upp en ny bild och länka den till objektet
-   (ersätter 📷-knappens mock i mockupen).
+   Ladda upp en ny bild och länka den till objektet
+   (ersätter 📷-knappens tidigare mock).
    --------------------------------------------------------------------- */
 async function tcUploadImageAttachment(sel, file){
   if(!tcAccessToken){
     if(TC_CONFIG.MOCK_FALLBACK) return makeImage();
     throw new Error("Ingen access token.");
   }
-  // VERIFIERA hela flödet: skapa fil -> ladda upp binärdata -> skapa Object Link.
-  throw new Error("tcUploadImageAttachment() är inte implementerad än.");
+  if(!sel?.modelId || !sel?.guid){
+    throw new Error("Inget valt objekt att koppla bilden till.");
+  }
+  const folderId = await ensureDataFolder();
+  const filename = file.name || `foto-${Date.now()}.jpg`;
+  const { fileId, versionId } = await uploadFileToFolder(folderId, filename, file);
+  await createObjectLink(sel.modelId, sel.guid, fileId);
+
+  return {
+    kind: "image", id: fileId, versionId, name: filename,
+    capturedAt: new Date().toLocaleDateString("sv-SE"),
+  };
 }
 
 /* =====================================================================
