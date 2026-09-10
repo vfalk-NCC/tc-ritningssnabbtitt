@@ -1,0 +1,1514 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ritningssnabbtitt</title>
+
+<!-- ============================================================
+     EXTERNA BIBLIOTEK
+     - trimble-connect-workspace-api: byt src nedan mot exakt samma
+       CDN-URL/version du redan använder i dina andra extensions
+       (PDF-overlay, Rita & extrudera, ...). Jag har INTE kunnat
+       verifiera exakt URL/version här, så det här är en platshållare.
+     - pdf.js: används för riktig PDF-rendering (ersätter renderMockDrawing).
+     ============================================================ -->
+<script src="https://unpkg.com/trimble-connect-workspace-api@1.0.1/dist/trimble-connect-workspace-api.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<style>
+  :root{
+    --bg:#1b1c1e; --panel:#232427; --panel-2:#2a2b2f; --border:#37383c;
+    --accent:#3d9bff; --text:#e8e9eb; --text-dim:#8b8d92;
+    --ok:#4caf7d; --warn:#e0a63a; --err:#e05b5b;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:"Segoe UI",system-ui,Arial,sans-serif;overflow:hidden;}
+
+  /* Extensionen kör i en egen iframe - vi äger inte 3D-vyn (den ritas av
+     TC:s värdsida). Layouten är därför "panel med flytande popup inuti
+     panelens egen yta", inte "popup ovanpå hela viewporten" som i mockupen.
+     Se kommentar i JS-initet längst ned om detta antagande. */
+  #app{ position:relative; width:100vw; height:100vh; background:var(--bg); overflow:hidden; }
+
+  #ext-toolbar{ position:absolute; top:0; left:0; right:0; height:34px; background:var(--panel);
+    border-bottom:1px solid var(--border); display:flex; align-items:center; padding:0 12px;
+    font-size:12px; color:var(--text-dim); gap:8px; z-index:5; }
+  #ext-toolbar b{color:var(--text); font-weight:600;}
+  #ext-status{ margin-left:auto; display:flex; align-items:center; gap:6px; }
+  #ext-status .dot{ width:7px; height:7px; border-radius:50%; background:var(--text-dim); }
+  #ext-status.connected .dot{ background:var(--ok); }
+  #ext-status.error .dot{ background:var(--err); }
+
+  #panel-body{ position:absolute; inset:34px 0 0 0; }
+  #hint{ position:absolute; bottom:16px; left:16px; font-size:12px; color:var(--text-dim);
+    background:rgba(0,0,0,.35); padding:6px 10px; border-radius:5px; max-width:80%; }
+  #hint.dp-hidden{display:none;}
+
+  /* ---------- Popup (snabbtitt) ---------- */
+  #dp-popup{
+    position:absolute; width:280px; height:400px;
+    min-width:220px; min-height:260px; max-width:640px; max-height:85vh;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    box-shadow:0 10px 30px rgba(0,0,0,.5);
+    display:none; flex-direction:column; z-index:50;
+    resize:both; overflow:hidden;
+    animation:pop-in .12s ease;
+    top:44px; right:12px;
+  }
+  @keyframes pop-in{ from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;} }
+  #dp-popup.dp-visible{display:flex;}
+  #dp-header{ display:flex; align-items:center; justify-content:space-between; flex:0 0 auto;
+    padding:8px 10px; border-bottom:1px solid var(--border); font-size:12px; cursor:move; }
+  #dp-title{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;}
+  #dp-meta{font-size:11px; color:var(--text-dim); padding:2px 10px 8px; flex:0 0 auto;}
+  #dp-thumb-wrap{ position:relative; flex:1 1 auto; margin:0 10px 8px; border-radius:5px;
+    background:#101113; overflow:hidden; min-height:60px; }
+  #dp-thumb-base, #dp-thumb-annot{ position:absolute; inset:0; width:100%; height:100%; }
+  #dp-thumb-annot.dp-annot-active{ cursor:crosshair; }
+  #dp-thumb-toolbar{ position:absolute; top:6px; right:6px; display:flex; gap:4px; z-index:2; }
+  #dp-thumb-filter{ position:absolute; top:6px; left:6px; display:flex; gap:3px; z-index:2; }
+  #dp-thumb-filter .dp-icon-btn{ width:auto; padding:0 6px; font-size:10px; }
+  .dp-icon-btn{ width:24px; height:24px; border-radius:4px; border:1px solid var(--border);
+    background:rgba(30,31,34,.85); color:var(--text-dim); font-size:12px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; padding:0; }
+  .dp-icon-btn:hover{ color:var(--text); background:#333; }
+  .dp-icon-btn.dp-active{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  #dp-empty{ color:var(--text-dim); font-size:12px; text-align:center; padding:0 14px;
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  #dp-loading{ color:var(--text-dim); font-size:12px; text-align:center; padding:0 14px;
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center; }
+  #dp-loading.dp-show{display:flex;}
+  #dp-error{ color:var(--err); font-size:11px; text-align:center; padding:0 14px;
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center; }
+  #dp-error.dp-show{display:flex;}
+  #dp-nav{ display:flex; align-items:center; justify-content:space-between; padding:6px 8px 8px; gap:4px; flex:0 0 auto; }
+  .dp-btn{ background:none; border:1px solid var(--border); color:var(--text); border-radius:4px;
+    padding:4px 7px; font-size:11px; cursor:pointer; line-height:1; white-space:nowrap; }
+  .dp-btn:hover{background:#333;}
+  .dp-btn:disabled{opacity:.3; cursor:default;}
+  .dp-btn:disabled:hover{background:none;}
+  #dp-counter{font-size:11px; color:var(--text-dim); flex:1; text-align:center;}
+  #dp-close{background:none; border:none; color:var(--text-dim); font-size:15px; cursor:pointer; padding:0 2px;}
+  #dp-close:hover{color:var(--text);}
+  #dp-save-flag{ font-size:10px; color:var(--ok); opacity:0; transition:opacity .3s ease; position:absolute; bottom:6px; left:6px; z-index:2; }
+  #dp-save-flag.dp-show{ opacity:1; }
+
+  /* ---------- Fullskärm expand ---------- */
+  #dp-modal{ position:fixed; inset:0; background:rgba(10,10,11,.92); z-index:100; display:none; flex-direction:column; backdrop-filter:blur(2px); }
+  #dp-modal.dp-visible{display:flex;}
+  #dp-modal-header{ display:flex; align-items:center; justify-content:space-between; padding:8px 18px;
+    font-size:13px; background:var(--panel); border-bottom:1px solid var(--border); flex-wrap:wrap; gap:8px; }
+  #dp-modal-nav{display:flex; gap:8px; align-items:center;}
+  #dp-modal-zoom{display:flex; gap:4px; align-items:center; margin-right:8px; color:var(--text-dim); font-size:12px;}
+  #dp-modal-save-flag{ font-size:11px; color:var(--ok); opacity:0; transition:opacity .3s ease; margin-right:8px; }
+  #dp-modal-save-flag.dp-show{ opacity:1; }
+
+  /* Ribbon */
+  #dp-ribbon{ display:flex; align-items:flex-end; gap:10px; padding:8px 18px; background:var(--panel-2);
+    border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .dp-rgroup{ display:flex; flex-direction:column; align-items:center; gap:5px; padding:6px 8px 5px;
+    border:1px solid var(--border); border-radius:6px; background:var(--panel); }
+  .dp-rgroup-btns{display:flex; gap:3px;}
+  .dp-rgroup-label{font-size:9px; color:var(--text-dim);}
+  .dp-tbtn{ width:38px; height:34px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:1px; background:none; border:1px solid transparent; border-radius:5px; color:var(--text);
+    cursor:pointer; font-size:8px; }
+  .dp-tbtn .ic{font-size:15px; line-height:1;}
+  .dp-tbtn:hover{background:#333;}
+  .dp-tbtn.dp-active{background:var(--accent); border-color:var(--accent); color:#fff;}
+  .dp-swatch{ width:18px; height:18px; border-radius:50%; border:2px solid transparent; cursor:pointer; padding:0; }
+  .dp-swatch.dp-active{ border-color:#fff; box-shadow:0 0 0 1px var(--accent); }
+  .dp-widthdot{ width:34px; height:24px; border-radius:4px; border:1px solid var(--border); background:none;
+    cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .dp-widthdot span{ display:block; border-radius:50%; background:var(--text); }
+  .dp-widthdot.dp-active{ border-color:var(--accent); background:rgba(61,155,255,.15); }
+  #dp-ribbon-note{ font-size:10px; color:var(--text-dim); margin-left:auto; align-self:center; max-width:260px; text-align:right; }
+
+  #dp-modal-body{ flex:1; overflow:auto; display:flex; align-items:center; justify-content:center; padding:24px; }
+  #dp-modal-canvas-wrap{ position:relative; display:inline-block; box-shadow:0 0 30px rgba(0,0,0,.6); }
+  #dp-modal-canvas, #dp-modal-annot{ display:block; }
+  #dp-modal-annot{ position:absolute; top:0; left:0; cursor:crosshair; }
+
+  .dp-inline-editor{ position:absolute; z-index:5; background:rgba(255,255,255,.98); border:2px solid #e0393e;
+    border-radius:4px; padding:4px 6px; font:12px "Segoe UI", Arial; color:#1a1a1a; resize:none; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="ext-toolbar">
+    Ritningssnabbtitt — <b id="ext-project-name">–</b>
+    <div id="ext-status"><span class="dot"></span><span id="ext-status-text">Ansluter…</span></div>
+  </div>
+
+  <div id="panel-body">
+    <div id="hint">Markera ett objekt i 3D-vyn för att se kopplade ritningar och bilder</div>
+
+    <div id="dp-popup">
+      <div id="dp-header">
+        <span id="dp-title">–</span>
+        <button id="dp-close" title="Stäng">✕</button>
+      </div>
+      <div id="dp-meta"></div>
+      <div id="dp-thumb-wrap">
+        <canvas id="dp-thumb-base"></canvas>
+        <canvas id="dp-thumb-annot"></canvas>
+        <div id="dp-thumb-filter">
+          <button class="dp-icon-btn dp-active" data-filter="all" title="Visa alla">Alla</button>
+          <button class="dp-icon-btn" data-filter="drawing" title="Visa bara ritningar">📄</button>
+          <button class="dp-icon-btn" data-filter="image" title="Visa bara bilder">🖼</button>
+        </div>
+        <div id="dp-thumb-toolbar">
+          <button class="dp-icon-btn" id="dp-add-image" title="Bifoga bild">📷</button>
+          <button class="dp-icon-btn" id="dp-pen-toggle" title="Snabbanteckning (frihand)">✎</button>
+          <button class="dp-icon-btn" id="dp-clear-annot" title="Rensa anteckningar">🗑</button>
+        </div>
+        <span id="dp-save-flag">Sparat ✓</span>
+        <div id="dp-empty" style="display:none;">Inga ritningar eller bilder kopplade till objektet</div>
+        <div id="dp-loading">Hämtar bilagor…</div>
+        <div id="dp-error"></div>
+      </div>
+      <div id="dp-nav">
+        <button class="dp-btn" id="dp-prev">‹ Föreg.</button>
+        <span id="dp-counter">0 / 0</span>
+        <button class="dp-btn" id="dp-expand-btn">⤢ Förstora</button>
+        <button class="dp-btn" id="dp-next">Nästa ›</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="dp-modal">
+  <div id="dp-modal-header">
+    <span id="dp-modal-title">–</span>
+    <div id="dp-modal-nav">
+      <span id="dp-modal-save-flag">Sparat ✓</span>
+      <div id="dp-modal-zoom">
+        <button class="dp-btn" id="dp-zoom-out">–</button>
+        <span id="dp-zoom-level">100%</span>
+        <button class="dp-btn" id="dp-zoom-in">+</button>
+      </div>
+      <button class="dp-btn" id="dp-modal-prev">‹ Föreg.</button>
+      <span id="dp-counter2">0 / 0</span>
+      <button class="dp-btn" id="dp-modal-next">Nästa ›</button>
+      <button class="dp-btn" id="dp-modal-close">Stäng ✕</button>
+    </div>
+  </div>
+
+  <div id="dp-ribbon">
+    <div id="dp-ribbon-groups" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;"></div>
+    <div class="dp-rgroup">
+      <div class="dp-rgroup-btns" id="dp-color-swatches"></div>
+      <span class="dp-rgroup-label">Färg</span>
+    </div>
+    <div class="dp-rgroup">
+      <div class="dp-rgroup-btns" id="dp-width-btns"></div>
+      <span class="dp-rgroup-label">Tjocklek</span>
+    </div>
+    <div class="dp-rgroup">
+      <div class="dp-rgroup-btns">
+        <button class="dp-btn" id="dp-undo">↺ Ångra</button>
+        <button class="dp-btn" id="dp-clear-all">🗑 Rensa</button>
+      </div>
+      <span class="dp-rgroup-label">Åtgärd</span>
+    </div>
+    <div id="dp-ribbon-note">
+      * Mått visas i verklig skala om ritningen kalibrerats (verktyget "Kalibrera"), annars i px.
+      Dubbelklicka/Enter avslutar omkrets &amp; area.
+    </div>
+  </div>
+
+  <div id="dp-modal-body">
+    <div id="dp-modal-canvas-wrap">
+      <canvas id="dp-modal-canvas"></canvas>
+      <canvas id="dp-modal-annot"></canvas>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="dp-file-input" accept="image/*" style="display:none;">
+
+<script>
+/* =====================================================================
+   DEL 1 — TRIMBLE CONNECT-INTEGRATION
+
+   ALLT i den här sektionen ersätter mockup-filens mockdata-lager.
+   Rader märkta "VERIFIERA" kunde INTE bekräftas mot Trimbles publika
+   dokumentation (components.connect.trimble.com /
+   developer.trimble.com) och måste stämmas av mot er egen TC-miljö
+   innan de går i produktion. De är skrivna som bästa-gissning utifrån
+   det som ÄR dokumenterat (se separat sammanfattning i chatten), inte
+   uppfunna ur tomma intet, men betrakta dem som en första skiss.
+
+   TC_CONFIG.MOCK_FALLBACK = true gör att varje TC-anrop som kastar fel
+   (t.ex. om ni öppnar filen lokalt, utanför en TC-iframe, för att testa
+   UI:t) faller tillbaka på mockdata, så resten av gränssnittet går att
+   jobba vidare på även innan alla TC-anrop är verifierade.
+   ===================================================================== */
+
+const TC_CONFIG = {
+  MOCK_FALLBACK: true,          // sätt till false när riktiga anrop är verifierade
+  MEASURE_UNIT: "mm",           // enhet som visas efter kalibrering
+};
+
+let tcApi = null;               // WorkspaceAPI-instans (WorkspaceAPI.connect(...))
+let tcProject = null;           // från api.project.getProject()
+let tcAccessToken = null;       // REST-token, se authenticate() — VERIFIERA hela flödet
+
+/* ---------------------------------------------------------------------
+   Anslutning + init.
+   VERIFIERA: exakt eventnamn för "objekt valt" (onSelectionChanged? select?),
+   och om WorkspaceAPI.connect kräver en tredje options-parameter i er
+   SDK-version. Loggar api-ytan vid start så ni kan diffa mot detta.
+   --------------------------------------------------------------------- */
+async function initExtension(){
+  setStatus("connecting", "Ansluter…");
+  try{
+    tcApi = await WorkspaceAPI.connect(window.parent, async (event, data) => {
+      console.log("[TC event]", event, data);
+      // VERIFIERA eventnamn — logga och justera mot vad som faktiskt triggas
+      // när du markerar ett objekt i er TC-miljö.
+      if(/select/i.test(String(event))){
+        await handleSelectionChanged(data);
+      }
+    });
+
+    console.log("[TC] api-yta:", Object.keys(tcApi));
+    console.log("[TC] viewer-yta:", tcApi.viewer ? Object.keys(tcApi.viewer) : null);
+
+    // Kända, pålitliga TC-anrop (samma mönster som era andra extensions):
+    const models = await tcApi.viewer.getModels();
+    console.log("[TC] getModels():", models);
+
+    tcProject = await tcApi.project.getProject().catch(()=>null);
+    document.getElementById("ext-project-name").textContent = tcProject?.name || "(okänt projekt)";
+
+    // VERIFIERA: hämta en access token för direkta REST-anrop mot Core API.
+    // Workspace API:t ovan ger bara UI/viewer-hooks, INTE en REST-token
+    // (se authenticate() nedan för resonemang).
+    tcAccessToken = await authenticate();
+
+    setStatus("connected", "Ansluten");
+  }catch(err){
+    console.error("[TC] init misslyckades:", err);
+    setStatus("error", "Kunde inte ansluta mot Trimble Connect" + (TC_CONFIG.MOCK_FALLBACK ? " — visar testdata" : ""));
+    if(TC_CONFIG.MOCK_FALLBACK){
+      initMockStandalone();
+    }
+  }
+}
+
+function setStatus(cls, text){
+  const el = document.getElementById("ext-status");
+  el.className = cls;
+  document.getElementById("ext-status-text").textContent = text;
+}
+
+/* ---------------------------------------------------------------------
+   VERIFIERA — auth för REST-anrop.
+   Workspace API (ovan) körs i en iframe och kommunicerar med värdsidan
+   via postMessage; det är ett UI/viewer-kontrakt, inte en autentiserings-
+   mekanism för att anropa Trimble Connects REST-API direkt. De flesta TC-
+   extensions som behöver läsa/skriva filer, objektlänkar (bilagor) eller
+   kommentarer gör därför en EGEN inloggning mot Trimble Identity
+   (id.trimble.com, OAuth2/PKCE) med ett klient-ID registrerat för just
+   den här extensionen.
+
+   Om er befintliga PDF-overlay-extension redan laddar ner filinnehåll
+   (vilket ni beskrev att den gör) har den redan löst exakt det här —
+   enklast är att kopiera in samma klient-ID/flow här istället för att
+   bygga om det. Jag hittade inte den koden åt er (se chatten), så det
+   här är en tom stub tills vidare.
+   --------------------------------------------------------------------- */
+async function authenticate(){
+  // VERIFIERA: PKCE-flow mot id.trimble.com, eller annan mekanism ni
+  // redan använder. Kasta tills vidare så MOCK_FALLBACK tar över.
+  throw new Error("authenticate() är inte implementerad än — se kommentar ovan.");
+}
+
+/* ---------------------------------------------------------------------
+   Selection-hantering.
+   --------------------------------------------------------------------- */
+let currentSelection = null;
+
+async function handleSelectionChanged(data){
+  // VERIFIERA formen på "data" — antar här en lista av valda objekt med
+  // modelId + runtimeId/objectRuntimeIds, i linje med hur getObjects()/
+  // getObjectProperties() är dokumenterade.
+  const selected = data?.selection || data?.objects || data;
+  if(!selected || (Array.isArray(selected) && selected.length===0)){
+    widget.hide();
+    currentSelection = null;
+    return;
+  }
+
+  const first = Array.isArray(selected) ? selected[0] : selected;
+  const modelId = first.modelId;
+  const runtimeId = first.runtimeId ?? first.objectRuntimeIds?.[0];
+
+  try{
+    const props = await tcApi.viewer.getObjectProperties(modelId, [runtimeId]);
+    const p = props?.[0];
+    const guid = p?.id || p?.externalId || p?.guid;
+    const name = p?.properties?.find?.(g=>g.name==="Name")?.value
+              || p?.class || `Objekt ${runtimeId}`;
+
+    currentSelection = { modelId, runtimeId, guid, name };
+    await openPopupForSelection(currentSelection);
+  }catch(err){
+    console.error("[TC] getObjectProperties misslyckades:", err);
+  }
+}
+
+async function openPopupForSelection(sel){
+  // VERIFIERA: skärmposition för klicket finns troligen INTE tillgänglig
+  // i extension-iframen (den ligger i värdsidans DOM, inte vår). Popupen
+  // öppnas därför på en fast plats (övre högra hörnet, se CSS #dp-popup)
+  // istället för "nära objektet" som i mockupen. Går att dra dit man vill.
+  const anchorX = window.innerWidth - 300;
+  const anchorY = 44;
+
+  widget.showLoading();
+  try{
+    const attachments = await getAttachmentsForObject(sel);
+    widget.showForObject({ name: sel.name, guid: sel.guid, attachments }, anchorX, anchorY);
+  }catch(err){
+    console.error("[TC] kunde inte hämta bilagor:", err);
+    widget.showError("Kunde inte hämta bilagor: " + err.message);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   VERIFIERA — hämta bilagor (ritningar + bilder) kopplade till ett objekt.
+
+   I TC:s UI heter funktionen "Object Attachments" (Bilagor-panelen);
+   i Core REST-API:ts dokumentation hittar man samma koncept under termen
+   "Object Links" — filer/ToDos/URL:er länkade till en 3D-entitet. Jag
+   har INTE kunnat verifiera den exakta endpointen/verbet för detta, så
+   nedan är en rimlig men OBEKRÄFTAD gissning på anropsform. Snabbaste
+   sättet att verifiera: öppna TC:s webb-UI, klicka ett objekt, öppna
+   Bilagor-panelen, och läs av Network-fliken i devtools för att se den
+   faktiska URL:en + auth-header som används (ni sa att ni gör detta
+   själva och skickar mig fynden — byt ut funktionen nedan när ni gör det).
+   --------------------------------------------------------------------- */
+async function getAttachmentsForObject(sel){
+  if(!tcAccessToken){
+    if(TC_CONFIG.MOCK_FALLBACK) return makeAttachments(2, 1);
+    throw new Error("Ingen access token — authenticate() måste implementeras först.");
+  }
+
+  const region = tcProject?.region || "app"; // VERIFIERA regionval (t.ex. "app"/"app-eu"/"app-us")
+  const url = `https://${region}.connect.trimble.com/tc/api/2.0/projects/${tcProject.id}/objects/${sel.guid}/links`; // VERIFIERA endpoint
+
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${tcAccessToken}` } });
+  if(!res.ok) throw new Error(`Object Links-anrop misslyckades (${res.status})`);
+  const links = await res.json();
+
+  // VERIFIERA fältnamn i svaret — mappar om till widgetens interna format.
+  return (links || []).map(l => l.fileType === "IMAGE" ? {
+    kind: "image", id: l.fileId, name: l.name, capturedAt: l.createdOn,
+  } : {
+    kind: "drawing", id: l.fileId, name: l.name, revision: l.revision || "–",
+    discipline: l.discipline || "–", color: "#3d9bff",
+  });
+}
+
+/* ---------------------------------------------------------------------
+   VERIFIERA — ladda ner filinnehåll (PDF/bild) för en bilaga.
+   Återanvänd gärna exakt samma nedladdningslogik som er PDF-overlay-
+   extension redan har (den löste redan detta), istället för nedan.
+   --------------------------------------------------------------------- */
+async function downloadAttachmentBlob(fileId){
+  if(!tcAccessToken){
+    if(TC_CONFIG.MOCK_FALLBACK) return null; // hanteras av mock-renderarna
+    throw new Error("Ingen access token.");
+  }
+  const region = tcProject?.region || "app"; // VERIFIERA
+  const url = `https://${region}.connect.trimble.com/tc/api/2.0/files/${fileId}/data`; // VERIFIERA endpoint
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${tcAccessToken}` } });
+  if(!res.ok) throw new Error(`Filnedladdning misslyckades (${res.status})`);
+  return await res.blob();
+}
+
+/* ---------------------------------------------------------------------
+   VERIFIERA — markup-persistens som EGEN attachment/blob-fil.
+   Enligt vad vi kom överens om: markup (anteckningar + ev. kalibrering)
+   sparas som en dold companion-fil (t.ex. "<ritningsnamn>.markup.json")
+   länkad till samma objekt/fil via Object Links, INTE som kommentar.
+
+   Två saker måste verifieras innan detta funkar skarpt:
+   1. Uppladdnings-endpointen för att skapa/uppdatera en fil i projektets
+      filträd (troligen POST/PUT mot /files eller /folders/{id}/files).
+   2. Hur en ny fil länkas till samma objekt via Object Links (troligen
+      samma resurs som getAttachmentsForObject läser från, fast POST).
+   --------------------------------------------------------------------- */
+async function tcSaveMarkupBlob(drawingId, data){
+  if(!tcAccessToken){
+    if(TC_CONFIG.MOCK_FALLBACK) return mockSaveMarkupBlob(drawingId, data);
+    throw new Error("Ingen access token.");
+  }
+  // VERIFIERA hela denna funktion mot er miljö.
+  const region = tcProject?.region || "app";
+  const companionName = `${drawingId}.markup.json`;
+  const url = `https://${region}.connect.trimble.com/tc/api/2.0/files/${drawingId}/markup`; // VERIFIERA endpoint
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if(!res.ok) throw new Error(`Kunde inte spara markup (${res.status})`);
+}
+
+async function tcLoadMarkupBlob(drawingId){
+  if(!tcAccessToken){
+    if(TC_CONFIG.MOCK_FALLBACK) return mockLoadMarkupBlob(drawingId);
+    throw new Error("Ingen access token.");
+  }
+  const region = tcProject?.region || "app";
+  const url = `https://${region}.connect.trimble.com/tc/api/2.0/files/${drawingId}/markup`; // VERIFIERA endpoint
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${tcAccessToken}` } });
+  if(res.status === 404) return { items: [], scale: null };
+  if(!res.ok) throw new Error(`Kunde inte läsa markup (${res.status})`);
+  return await res.json();
+}
+
+/* ---------------------------------------------------------------------
+   VERIFIERA — ladda upp en ny bild och länka den till objektet
+   (ersätter 📷-knappens mock i mockupen).
+   --------------------------------------------------------------------- */
+async function tcUploadImageAttachment(sel, file){
+  if(!tcAccessToken){
+    if(TC_CONFIG.MOCK_FALLBACK) return makeImage();
+    throw new Error("Ingen access token.");
+  }
+  // VERIFIERA hela flödet: skapa fil -> ladda upp binärdata -> skapa Object Link.
+  throw new Error("tcUploadImageAttachment() är inte implementerad än.");
+}
+
+/* =====================================================================
+   DEL 1b — LOKAL MOCKFALLBACK (för att kunna testa UI:t utan TC)
+   ===================================================================== */
+const DISCIPLINES = ["K","A","E","V","VS"];
+function randRev(){ return String.fromCharCode(65 + Math.floor(Math.random()*4)); }
+function makeDrawing(){
+  const disc = DISCIPLINES[Math.floor(Math.random()*DISCIPLINES.length)];
+  return { kind:"drawing", id:"508"+(2000+Math.floor(Math.random()*9999))+"-"+Math.random().toString(36).slice(2,6),
+    name:`508${2000+Math.floor(Math.random()*9999)}.pdf`, revision:randRev(), discipline:disc,
+    color:{K:"#3d9bff",A:"#e0a63a",E:"#4caf7d",V:"#c96bd1",VS:"#e05b5b"}[disc] };
+}
+const PHOTO_HUES = [205, 20, 145, 45, 280];
+function makeImage(){
+  const hue = PHOTO_HUES[Math.floor(Math.random()*PHOTO_HUES.length)];
+  const now = new Date(Date.now() - Math.floor(Math.random()*20)*86400000);
+  return { kind:"image", id:"img-"+Math.random().toString(36).slice(2,9),
+    name:`IMG_${1000+Math.floor(Math.random()*8999)}.jpg`, capturedAt: now.toLocaleDateString("sv-SE"), hue };
+}
+function makeAttachments(drawingCount, imageCount){
+  const out = [];
+  for(let i=0;i<drawingCount;i++) out.push(makeDrawing());
+  for(let i=0;i<imageCount;i++) out.push(makeImage());
+  return out;
+}
+const mockMarkupStore = {};
+function mockSaveMarkupBlob(id, data){ mockMarkupStore[id] = JSON.parse(JSON.stringify(data)); }
+function mockLoadMarkupBlob(id){ return mockMarkupStore[id] ? JSON.parse(JSON.stringify(mockMarkupStore[id])) : { items: [], scale: null }; }
+
+/* Om extensionen körs utanför TC (lokalt, för UI-utveckling): simulera
+   ett klick var 3:e sekund som väljer ett "objekt" så popupen går att se. */
+function initMockStandalone(){
+  document.getElementById("ext-project-name").textContent = "(fristående testläge, ingen TC-anslutning)";
+  const demoObj = { name: "Demo-objekt", guid: "GUID-DEMO", attachments: makeAttachments(3,2) };
+  document.getElementById("hint").textContent = "Testläge: ingen TC-anslutning. Visar exempeldata.";
+  widget.showForObject(demoObj, window.innerWidth-300, 44);
+}
+
+/* =====================================================================
+   DEL 2 — RIT-HJÄLPFUNKTIONER FÖR MARKUP-LAGRET
+   (oförändrat från mockupen — helt frikopplat från datakällan)
+   ===================================================================== */
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+function drawArrowHead(ctx,a,b,color,width){
+  const ang = Math.atan2(b.y-a.y, b.x-a.x);
+  const len = 8 + width*1.6;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(b.x,b.y);
+  ctx.lineTo(b.x-len*Math.cos(ang-0.4), b.y-len*Math.sin(ang-0.4));
+  ctx.lineTo(b.x-len*Math.cos(ang+0.4), b.y-len*Math.sin(ang+0.4));
+  ctx.closePath();
+  ctx.fill();
+}
+function drawCloudPath(ctx,cx,cy,rx,ry){
+  const n = 14, step = (Math.PI*2)/n;
+  ctx.beginPath();
+  for(let i=0;i<=n;i++){
+    const a0=i*step;
+    const x0=cx+Math.cos(a0)*rx, y0=cy+Math.sin(a0)*ry;
+    if(i===0) ctx.moveTo(x0,y0);
+    const a1=a0+step;
+    const mx=cx+Math.cos(a0+step/2)*rx*1.18, my=cy+Math.sin(a0+step/2)*ry*1.18;
+    const x1=cx+Math.cos(a1)*rx, y1=cy+Math.sin(a1)*ry;
+    ctx.quadraticCurveTo(mx,my,x1,y1);
+  }
+  ctx.closePath();
+}
+function wrapText(ctx,text,x,y,maxWidth,lineHeight){
+  const paragraphs = (text||"").split("\n");
+  let yy = y;
+  paragraphs.forEach(para=>{
+    const words = para.split(" ");
+    let line = "";
+    words.forEach(word=>{
+      const test = line ? line+" "+word : word;
+      if(ctx.measureText(test).width > maxWidth && line){
+        ctx.fillText(line, x, yy); yy += lineHeight; line = word;
+      } else line = test;
+    });
+    ctx.fillText(line, x, yy); yy += lineHeight;
+  });
+}
+function labelAt(ctx,x,y,text){
+  ctx.font = "11px Segoe UI, Arial";
+  const tw = ctx.measureText(text).width;
+  ctx.fillStyle = "rgba(20,20,22,.85)";
+  ctx.fillRect(x-tw/2-4, y-9, tw+8, 16);
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.fillText(text, x, y+3);
+  ctx.textAlign = "left";
+}
+
+/* Formaterar ett mått i px till verklig enhet om ritningen är kalibrerad. */
+function formatMeasure(px, scale, suffix){
+  if(scale && scale.pxPerUnit){
+    const val = px / scale.pxPerUnit;
+    return `${val.toFixed(val<10?2:1)} ${scale.unit}${suffix||""}`;
+  }
+  return `${px.toFixed(0)} px*${suffix||""}`;
+}
+
+function drawAnnotationItem(ctx,w,h,item,selected,scale){
+  const P = p => ({x:p.x*w, y:p.y*h});
+  switch(item.type){
+    case "pen": {
+      if(item.points.length<2) break;
+      ctx.strokeStyle=item.color; ctx.lineWidth=item.width; ctx.lineCap="round"; ctx.lineJoin="round";
+      ctx.beginPath();
+      item.points.forEach((p,i)=>{ const q=P(p); i===0?ctx.moveTo(q.x,q.y):ctx.lineTo(q.x,q.y); });
+      ctx.stroke();
+      break;
+    }
+    case "line": case "arrow": {
+      const a=P(item.points[0]), b=P(item.points[1]);
+      ctx.strokeStyle=item.color; ctx.lineWidth=item.width; ctx.lineCap="round";
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      if(item.type==="arrow") drawArrowHead(ctx,a,b,item.color,item.width);
+      break;
+    }
+    case "rect": {
+      const a=P(item.points[0]), b=P(item.points[1]);
+      ctx.strokeStyle=item.color; ctx.lineWidth=item.width;
+      ctx.strokeRect(Math.min(a.x,b.x),Math.min(a.y,b.y),Math.abs(b.x-a.x),Math.abs(b.y-a.y));
+      break;
+    }
+    case "ellipse": {
+      const a=P(item.points[0]), b=P(item.points[1]);
+      const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, rx=Math.abs(b.x-a.x)/2, ry=Math.abs(b.y-a.y)/2;
+      ctx.strokeStyle=item.color; ctx.lineWidth=item.width;
+      ctx.beginPath(); ctx.ellipse(cx,cy,Math.max(rx,1),Math.max(ry,1),0,0,Math.PI*2); ctx.stroke();
+      break;
+    }
+    case "cloud": {
+      const a=P(item.points[0]), b=P(item.points[1]);
+      const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, rx=Math.abs(b.x-a.x)/2, ry=Math.abs(b.y-a.y)/2;
+      ctx.strokeStyle=item.color; ctx.lineWidth=item.width;
+      drawCloudPath(ctx,cx,cy,Math.max(rx,8),Math.max(ry,8));
+      ctx.stroke();
+      break;
+    }
+    case "text": {
+      const p=P({x:item.x,y:item.y});
+      ctx.font="13px Segoe UI, Arial";
+      const lines=(item.text||"").split("\n");
+      const lineH=16;
+      const textW=Math.max(20,...lines.map(l=>ctx.measureText(l).width));
+      ctx.fillStyle="rgba(255,255,255,.94)";
+      ctx.fillRect(p.x-4,p.y-4,textW+8,lines.length*lineH+8);
+      ctx.strokeStyle=item.color; ctx.lineWidth=1;
+      ctx.strokeRect(p.x-4,p.y-4,textW+8,lines.length*lineH+8);
+      ctx.fillStyle="#1a1a1a";
+      lines.forEach((l,i)=>ctx.fillText(l,p.x,p.y+12+i*lineH));
+      break;
+    }
+    case "callout": {
+      const anchor=P(item.anchor);
+      const bx=item.box.x*w, by=item.box.y*h, bw=item.box.w*w, bh=item.box.h*h;
+      const boxCx=bx+bw/2, boxCy=by+bh/2;
+      ctx.strokeStyle=item.color; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(anchor.x,anchor.y); ctx.lineTo(boxCx,boxCy); ctx.stroke();
+      ctx.fillStyle="rgba(255,255,255,.97)";
+      roundRect(ctx,bx,by,bw,bh,6); ctx.fill();
+      ctx.strokeStyle=item.color; ctx.lineWidth=1.5; roundRect(ctx,bx,by,bw,bh,6); ctx.stroke();
+      ctx.fillStyle=item.color; ctx.beginPath(); ctx.arc(anchor.x,anchor.y,3.5,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="#1a1a1a"; ctx.font="12px Segoe UI, Arial";
+      wrapText(ctx, item.text||"", bx+8, by+16, bw-16, 15);
+      break;
+    }
+    case "measureDistance": {
+      const a=P(item.points[0]), b=P(item.points[1]);
+      ctx.save(); ctx.setLineDash([5,4]);
+      ctx.strokeStyle="#e0a63a"; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      ctx.restore();
+      const d=Math.hypot(b.x-a.x,b.y-a.y);
+      labelAt(ctx,(a.x+b.x)/2,(a.y+b.y)/2, formatMeasure(d, scale, ""));
+      break;
+    }
+    case "measurePerimeter": case "measureArea": {
+      if(item.points.length<2) break;
+      const pts = item.points.map(P);
+      ctx.save(); ctx.setLineDash([5,4]);
+      ctx.strokeStyle = item.type==="measureArea" ? "#4caf7d" : "#e0a63a";
+      ctx.lineWidth=1.5;
+      ctx.beginPath();
+      pts.forEach((p,i)=> i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
+      if(pts.length>2) ctx.closePath();
+      if(item.type==="measureArea" && pts.length>2){ ctx.fillStyle="rgba(76,175,125,.15)"; ctx.fill(); }
+      ctx.stroke();
+      ctx.restore();
+      const cx=pts.reduce((s,p)=>s+p.x,0)/pts.length, cy=pts.reduce((s,p)=>s+p.y,0)/pts.length;
+      if(pts.length>2){
+        if(item.type==="measurePerimeter"){
+          let per=0; for(let i=0;i<pts.length;i++){ const n=pts[(i+1)%pts.length]; per+=Math.hypot(n.x-pts[i].x,n.y-pts[i].y); }
+          labelAt(ctx,cx,cy, "O: " + formatMeasure(per, scale, ""));
+        } else {
+          let area=0; for(let i=0;i<pts.length;i++){ const n=pts[(i+1)%pts.length]; area+=pts[i].x*n.y-n.x*pts[i].y; }
+          area=Math.abs(area)/2;
+          const label = scale && scale.pxPerUnit
+            ? `A: ${(area/(scale.pxPerUnit*scale.pxPerUnit)).toFixed(2)} ${scale.unit}²`
+            : `A: ${area.toFixed(0)} px²*`;
+          labelAt(ctx,cx,cy,label);
+        }
+      }
+      break;
+    }
+    case "calibration": {
+      const a=P(item.points[0]), b=P(item.points[1]);
+      ctx.save(); ctx.setLineDash([2,2]);
+      ctx.strokeStyle="#ffffff"; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      ctx.restore();
+      labelAt(ctx,(a.x+b.x)/2,(a.y+b.y)/2, `Kalibrering: ${item.realLength} ${item.unit}`);
+      break;
+    }
+  }
+  if(selected){
+    if(item.type==="callout"){
+      const a = { x:item.anchor.x*w, y:item.anchor.y*h };
+      const bx=item.box.x*w, by=item.box.y*h, bw=item.box.w*w, bh=item.box.h*h;
+      ctx.save();
+      ctx.setLineDash([4,3]); ctx.strokeStyle="#3d9bff"; ctx.lineWidth=1;
+      ctx.strokeRect(bx-4,by-4,bw+8,bh+8);
+      ctx.restore();
+      ctx.strokeStyle="#3d9bff"; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(a.x,a.y,6,0,Math.PI*2); ctx.stroke();
+      ctx.fillStyle="rgba(61,155,255,.25)";
+      ctx.beginPath(); ctx.arc(a.x,a.y,6,0,Math.PI*2); ctx.fill();
+    } else {
+      let pts=[];
+      if(item.points) pts=pts.concat(item.points);
+      if(typeof item.x==="number") pts.push({x:item.x,y:item.y},{x:item.x+0.12,y:item.y+0.05});
+      if(pts.length){
+        const minX=Math.min(...pts.map(p=>p.x))*w, maxX=Math.max(...pts.map(p=>p.x))*w;
+        const minY=Math.min(...pts.map(p=>p.y))*h, maxY=Math.max(...pts.map(p=>p.y))*h;
+        ctx.save(); ctx.setLineDash([4,3]); ctx.strokeStyle="#3d9bff"; ctx.lineWidth=1;
+        ctx.strokeRect(minX-4,minY-4,(maxX-minX)+8,(maxY-minY)+8);
+        ctx.restore();
+      }
+    }
+  }
+}
+
+/* =====================================================================
+   DEL 3 — RITNINGS-/BILDRENDERING (pdf.js + riktiga bilder)
+   Ersätter renderMockDrawing/renderMockImage. Faller tillbaka på en
+   platshållarritning om nedladdningen misslyckas eller körs i mockläge.
+   ===================================================================== */
+if(window.pdfjsLib){
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+
+function renderPlaceholder(canvas, item, message){
+  const w = canvas.width, h = canvas.height;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#2a2b2f";
+  ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle = "#555"; ctx.strokeRect(4,4,w-8,h-8);
+  ctx.fillStyle = "#8b8d92";
+  ctx.font = "12px Segoe UI, Arial";
+  ctx.textAlign = "center";
+  wrapText(ctx, message || item.name, w/2 - 60, h/2, 120, 15);
+  ctx.textAlign = "left";
+}
+
+async function renderRealDrawing(canvas, drawing){
+  try{
+    const blob = await downloadAttachmentBlob(drawing.id);
+    if(!blob || !window.pdfjsLib) throw new Error("Ingen fildata / pdf.js saknas");
+    const buf = await blob.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const page = await pdf.getPage(drawing.page || 1); // TODO: sidväljare för fler-sidiga PDF:er
+    const viewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(canvas.width / viewport.width, canvas.height / viewport.height);
+    const scaledViewport = page.getViewport({ scale });
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
+  }catch(err){
+    console.warn("[render] PDF-rendering misslyckades, visar platshållare:", err);
+    renderPlaceholder(canvas, drawing, `${drawing.name}\n(kunde inte hämtas/renderas ännu)`);
+  }
+}
+
+async function renderRealImage(canvas, imgItem){
+  try{
+    const blob = await downloadAttachmentBlob(imgItem.id);
+    if(!blob) throw new Error("Ingen fildata");
+    const bitmap = await createImageBitmap(blob);
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height;
+    ctx.fillStyle = "#000"; ctx.fillRect(0,0,w,h);
+    const scale = Math.min(w / bitmap.width, h / bitmap.height);
+    const dw = bitmap.width*scale, dh = bitmap.height*scale;
+    ctx.drawImage(bitmap, (w-dw)/2, (h-dh)/2, dw, dh);
+  }catch(err){
+    console.warn("[render] bildladdning misslyckades, visar platshållare:", err);
+    renderPlaceholder(canvas, imgItem, `${imgItem.name}\n(kunde inte hämtas ännu)`);
+  }
+}
+
+function kindIcon(kind){ return kind==="image" ? "🖼" : "📄"; }
+function kindMeta(item){
+  return item.kind==="image" ? `Foto · ${item.capturedAt}` : `Rev. ${item.revision} · Disciplin ${item.discipline}`;
+}
+async function renderAttachment(canvas, item){
+  if(item.kind==="image") await renderRealImage(canvas, item);
+  else await renderRealDrawing(canvas, item);
+}
+
+/* =====================================================================
+   DEL 4 — PERSISTENS (window.storage → TC companion-fil)
+   ===================================================================== */
+const annotationCache = {}; // drawingId -> {items:[...], scale:{...}|null}
+
+async function loadAnnotations(drawingId){
+  if(annotationCache[drawingId]) return annotationCache[drawingId];
+  let data = { items: [], scale: null };
+  try{
+    const loaded = await tcLoadMarkupBlob(drawingId);
+    if(loaded) data = loaded;
+  }catch(e){ console.warn("[markup] kunde inte läsa sparad markup:", e); }
+  annotationCache[drawingId] = data;
+  return data;
+}
+function saveAnnotations(drawingId, data, flagEl){
+  annotationCache[drawingId] = data;
+  tcSaveMarkupBlob(drawingId, data)
+    .then(()=>{
+      if(flagEl){
+        flagEl.classList.add("dp-show");
+        clearTimeout(flagEl._t);
+        flagEl._t = setTimeout(()=>flagEl.classList.remove("dp-show"), 1200);
+      }
+    })
+    .catch(err=>console.error("Kunde inte spara anteckning:", err));
+}
+
+/* =====================================================================
+   DEL 5 — AnnotationEngine
+   (oförändrad rit-/interaktionslogik mot mockupen; tillägg: this.scale
+   för kalibrering, samt tool "calibrate")
+   ===================================================================== */
+class AnnotationEngine{
+  constructor(canvas, opts){
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.getDrawingId = opts.getDrawingId;
+    this.saveFlagEl = opts.saveFlagEl || null;
+    this.wrapEl = opts.wrapEl || null;
+    this.allowSelect = !!opts.allowSelect;
+    this.tool = "none";
+    this.color = "#e0393e";
+    this.width = 2.5;
+    this.items = [];
+    this.scale = null; // {pxPerUnit, unit} — sätts via kalibrering
+    this.selectedIndex = -1;
+    this.dragging = null;
+    this.pendingShape = null;
+    this.pendingPoly = null;
+    this.editor = null;
+
+    canvas.addEventListener("pointerdown", e=>this._onDown(e));
+    canvas.addEventListener("pointermove", e=>this._onMove(e));
+    canvas.addEventListener("pointerup", e=>this._onUp(e));
+    canvas.addEventListener("dblclick", e=>this._onDblClick(e));
+    if(this.allowSelect) document.addEventListener("keydown", e=>this._onKey(e));
+  }
+
+  setTool(t){ this._cancelPending(); this.tool=t; this.selectedIndex=-1; this.canvas.style.cursor=""; this.render(); }
+  setColor(c){ this.color=c; }
+  setWidth(w){ this.width=w; }
+
+  async loadForDrawing(){
+    const id = this.getDrawingId();
+    if(!id){ this.items=[]; this.scale=null; this.render(); return; }
+    const data = await loadAnnotations(id);
+    this.items = data.items || [];
+    this.scale = data.scale || null;
+    this.selectedIndex = -1;
+    this.render();
+  }
+  persist(){
+    const id = this.getDrawingId();
+    if(!id) return;
+    saveAnnotations(id, {items:this.items, scale:this.scale}, this.saveFlagEl);
+  }
+  undo(){ this.items.pop(); this.persist(); this.render(); }
+  clearAll(){ this.items=[]; this.persist(); this.render(); }
+
+  _pos(e){
+    const r = this.canvas.getBoundingClientRect();
+    return { x:(e.clientX-r.left)/r.width, y:(e.clientY-r.top)/r.height };
+  }
+  _dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+
+  _onDown(e){
+    if(this.tool==="none" || this.editor) return;
+    e.preventDefault();
+    const p = this._pos(e);
+
+    if(this.tool==="select"){
+      const hit = this._hitTestDetailed(p);
+      this.selectedIndex = hit ? hit.index : -1;
+      if(hit){
+        this.dragging = { start:p, part:hit.part, orig: JSON.parse(JSON.stringify(this.items[hit.index])) };
+        this.canvas.setPointerCapture(e.pointerId);
+      }
+      this.render();
+      return;
+    }
+    if(this.tool==="pen"){
+      this.pendingShape = { type:"pen", color:this.color, width:this.width, points:[p] };
+      this.canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+    if(["line","arrow","rect","ellipse","cloud"].includes(this.tool)){
+      this.pendingShape = { type:this.tool, color:this.color, width:this.width, points:[p,{...p}] };
+      this.canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+    if(this.tool==="calibrate"){
+      if(!this.pendingPoly){ this.pendingPoly = {type:"calibrate-pending", points:[p]}; this.render(); return; }
+      this.pendingPoly.points.push(p);
+      const [a,b] = this.pendingPoly.points;
+      const pxDist = Math.hypot((b.x-a.x)*this.canvas.width, (b.y-a.y)*this.canvas.height);
+      this.pendingPoly = null;
+      const realLength = window.prompt("Verklig längd för den markerade linjen (t.ex. 1000):", "1000");
+      const unit = window.prompt("Enhet:", TC_CONFIG.MEASURE_UNIT) || TC_CONFIG.MEASURE_UNIT;
+      if(realLength && !isNaN(parseFloat(realLength))){
+        this.scale = { pxPerUnit: pxDist / parseFloat(realLength), unit };
+        this.items.push({ type:"calibration", points:[a,b], realLength: parseFloat(realLength), unit });
+        this.persist();
+      }
+      this.render();
+      return;
+    }
+    if(this.tool==="measureDistance"){
+      if(!this.pendingPoly){ this.pendingPoly = {type:"measureDistance", points:[p]}; }
+      else {
+        this.pendingPoly.points.push(p);
+        this.items.push(this.pendingPoly);
+        this.pendingPoly = null;
+        this.persist();
+      }
+      this.render();
+      return;
+    }
+    if(this.tool==="measurePerimeter" || this.tool==="measureArea"){
+      if(!this.pendingPoly || this.pendingPoly.type!==this.tool) this.pendingPoly = {type:this.tool, points:[]};
+      this.pendingPoly.points.push(p);
+      this.render();
+      return;
+    }
+    if(this.tool==="text"){
+      this._openEditor({type:"text", x:p.x, y:p.y, text:"", color:this.color});
+      return;
+    }
+    if(this.tool==="callout"){
+      const box = { x:Math.min(0.95,p.x+0.03), y:Math.max(0.02,p.y-0.16), w:0.3, h:0.16 };
+      this._openEditor({type:"callout", anchor:{x:p.x,y:p.y}, box, text:"", color:this.color});
+      return;
+    }
+  }
+  _onMove(e){
+    const p = this._pos(e);
+    if(this.tool==="select" && this.dragging){
+      const dx=p.x-this.dragging.start.x, dy=p.y-this.dragging.start.y;
+      const orig = this.dragging.orig;
+      let updated;
+      if(this.dragging.part==="anchor"){
+        updated = JSON.parse(JSON.stringify(orig));
+        updated.anchor = { x: orig.anchor.x+dx, y: orig.anchor.y+dy };
+      } else if(this.dragging.part==="box"){
+        updated = JSON.parse(JSON.stringify(orig));
+        updated.box = { ...orig.box, x: orig.box.x+dx, y: orig.box.y+dy };
+      } else {
+        updated = this._shiftItem(orig, dx, dy);
+      }
+      this.items[this.selectedIndex] = updated;
+      this.render();
+      return;
+    }
+    if(this.tool==="select" && !this.dragging){
+      const hit = this._hitTestDetailed(p);
+      this.canvas.style.cursor = hit ? (hit.part==="anchor" ? "crosshair" : "move") : "default";
+    }
+    if(this.pendingShape){
+      if(this.pendingShape.type==="pen") this.pendingShape.points.push(p);
+      else this.pendingShape.points[1] = p;
+      this.render(this.pendingShape);
+      return;
+    }
+    if(this.pendingPoly && (this.tool==="measurePerimeter"||this.tool==="measureArea")){
+      this.render({...this.pendingPoly, points:[...this.pendingPoly.points, p]});
+      return;
+    }
+  }
+  _onUp(){
+    if(this.tool==="select" && this.dragging){ this.dragging=null; this.persist(); return; }
+    if(this.pendingShape){
+      if(this.pendingShape.type!=="pen" && this._dist(this.pendingShape.points[0],this.pendingShape.points[1])<0.005){
+        this.pendingShape=null; this.render(); return;
+      }
+      this.items.push(this.pendingShape);
+      this.pendingShape=null;
+      this.persist();
+      this.render();
+    }
+  }
+  _onDblClick(e){
+    if((this.tool==="measurePerimeter"||this.tool==="measureArea") && this.pendingPoly && this.pendingPoly.points.length>=3){
+      this.items.push(this.pendingPoly);
+      this.pendingPoly=null;
+      this.persist();
+      this.render();
+      return;
+    }
+    if(this.tool==="select"){
+      const p=this._pos(e);
+      const idx=this._hitTest(p);
+      if(idx>=0 && (this.items[idx].type==="text"||this.items[idx].type==="callout")) this._openEditor(this.items[idx], idx);
+    }
+  }
+  _onKey(e){
+    if(this.editor) return;
+    if(e.key==="Escape"){ this.pendingPoly=null; this.pendingShape=null; this.render(); }
+    if(e.key==="Enter" && this.pendingPoly && this.pendingPoly.points.length>=3){
+      this.items.push(this.pendingPoly); this.pendingPoly=null; this.persist(); this.render();
+    }
+    if((e.key==="Delete"||e.key==="Backspace") && this.tool==="select" && this.selectedIndex>=0){
+      this.items.splice(this.selectedIndex,1);
+      this.selectedIndex=-1;
+      this.persist(); this.render();
+    }
+  }
+  _shiftItem(item,dx,dy){
+    const s = JSON.parse(JSON.stringify(item));
+    const mv = p=>({x:p.x+dx,y:p.y+dy});
+    if(s.points) s.points = s.points.map(mv);
+    if(s.anchor) s.anchor = mv(s.anchor);
+    if(s.box){ s.box.x+=dx; s.box.y+=dy; }
+    if(typeof s.x==="number"){ s.x+=dx; s.y+=dy; }
+    return s;
+  }
+  _bounds(item){
+    let pts=[];
+    if(item.points) pts=pts.concat(item.points);
+    if(item.anchor) pts.push(item.anchor);
+    if(item.box) pts.push({x:item.box.x,y:item.box.y},{x:item.box.x+item.box.w,y:item.box.y+item.box.h});
+    if(typeof item.x==="number") pts.push({x:item.x,y:item.y},{x:item.x+0.12,y:item.y+0.05});
+    if(!pts.length) return {minX:0,minY:0,maxX:0,maxY:0};
+    return { minX:Math.min(...pts.map(p=>p.x)), maxX:Math.max(...pts.map(p=>p.x)),
+             minY:Math.min(...pts.map(p=>p.y)), maxY:Math.max(...pts.map(p=>p.y)) };
+  }
+  _hitTest(p){
+    const hit = this._hitTestDetailed(p);
+    return hit ? hit.index : -1;
+  }
+  _hitTestDetailed(p){
+    const pad=0.02, anchorPad=0.025;
+    for(let i=this.items.length-1;i>=0;i--){
+      const item = this.items[i];
+      if(item.type==="callout"){
+        if(this._dist(p, item.anchor) <= anchorPad) return {index:i, part:"anchor"};
+        const b = item.box;
+        if(p.x>=b.x-pad && p.x<=b.x+b.w+pad && p.y>=b.y-pad && p.y<=b.y+b.h+pad) return {index:i, part:"box"};
+        continue;
+      }
+      const b=this._bounds(item);
+      if(p.x>=b.minX-pad && p.x<=b.maxX+pad && p.y>=b.minY-pad && p.y<=b.maxY+pad) return {index:i, part:"whole"};
+    }
+    return null;
+  }
+  _openEditor(item, existingIndex=-1){
+    this._cancelEditor();
+    if(!this.wrapEl) return;
+    const ta = document.createElement("textarea");
+    ta.value = item.text || "";
+    ta.className = "dp-inline-editor";
+    const cw = this.canvas.clientWidth, ch = this.canvas.clientHeight;
+    const left = (item.type==="callout" ? item.box.x : item.x) * cw;
+    const top = (item.type==="callout" ? item.box.y : item.y) * ch;
+    const boxW = item.type==="callout" ? item.box.w*cw : 150;
+    const boxH = item.type==="callout" ? item.box.h*ch : 44;
+    ta.style.left=left+"px"; ta.style.top=top+"px";
+    ta.style.width=boxW+"px"; ta.style.height=boxH+"px";
+    ta.style.borderColor=item.color;
+    this.wrapEl.appendChild(ta);
+    requestAnimationFrame(()=>{ ta.focus(); ta.select(); });
+    this.editor = { ta, item, existingIndex };
+
+    const commit = ()=>{
+      const text = ta.value.trim();
+      if(existingIndex>=0){
+        if(text) this.items[existingIndex].text = text;
+        else this.items.splice(existingIndex,1);
+      } else if(text){
+        item.text = text;
+        this.items.push(item);
+      }
+      this._cancelEditor();
+      this.persist();
+      this.render();
+      if(this.tool==="text"||this.tool==="callout") this.setTool("select");
+    };
+    ta.addEventListener("blur", commit);
+    ta.addEventListener("keydown",(e)=>{
+      e.stopPropagation();
+      if(e.key==="Escape"){ this._cancelEditor(); }
+      if(e.key==="Enter" && e.ctrlKey){ commit(); }
+    });
+  }
+  _cancelEditor(){ if(this.editor){ this.editor.ta.remove(); this.editor=null; } }
+  _cancelPending(){ this.pendingShape=null; this.pendingPoly=null; this._cancelEditor(); }
+
+  render(preview=null){
+    const ctx=this.ctx, w=this.canvas.width, h=this.canvas.height;
+    ctx.clearRect(0,0,w,h);
+    this.items.forEach((it,i)=> drawAnnotationItem(ctx,w,h,it, i===this.selectedIndex, this.scale));
+    if(preview) drawAnnotationItem(ctx,w,h,preview,false,this.scale);
+  }
+}
+
+/* =====================================================================
+   DEL 6 — DrawingPreviewWidget
+   (samma UI-logik som mockupen: popup, filter, navigering, drag/resize,
+   fullskärm + ribbon. Ändringar: showForObject tar redan uppslagen data
+   istället för att slumpa fram den, _addMockImage → riktig uppladdning,
+   nya loading/error-lägen, ribbon har fått ett "Kalibrera"-verktyg.)
+   ===================================================================== */
+class DrawingPreviewWidget{
+  constructor(){
+    this.attachments = [];
+    this.filter = "all";
+    this.index = 0;
+    this.modalList = [];
+    this.modalIndex = 0;
+    this.modalZoom = 1;
+    this.currentObj = null;
+    this._cacheDom();
+    this._bindEvents();
+    this._makeDraggable();
+    this._observeResize();
+
+    this.popupEngine = new AnnotationEngine(this.el.thumbAnnot, {
+      getDrawingId: ()=>this._currentItem()?.id,
+      saveFlagEl: this.el.thumbSaveFlag,
+      allowSelect: false,
+      wrapEl: null,
+    });
+    this.modalEngine = new AnnotationEngine(this.el.modalAnnot, {
+      getDrawingId: ()=>this.modalList[this.modalIndex]?.id,
+      saveFlagEl: this.el.modalSaveFlag,
+      allowSelect: true,
+      wrapEl: this.el.modalCanvasWrap,
+    });
+
+    this._buildRibbon();
+    this._bindFilterButtons();
+  }
+
+  _visibleList(){
+    return this.filter==="all" ? this.attachments : this.attachments.filter(a=>a.kind===this.filter);
+  }
+  _currentItem(){ return this._visibleList()[this.index]; }
+
+  _bindFilterButtons(){
+    const btns = this.el.thumbWrap.querySelectorAll("#dp-thumb-filter [data-filter]");
+    btns.forEach(b=>{
+      b.addEventListener("click", e=>{
+        e.stopPropagation();
+        this._setFilter(b.dataset.filter);
+        btns.forEach(x=>x.classList.remove("dp-active"));
+        b.classList.add("dp-active");
+      });
+    });
+  }
+  _setFilter(f){
+    const prevItem = this._currentItem();
+    this.filter = f;
+    const list = this._visibleList();
+    const idx = prevItem ? list.indexOf(prevItem) : -1;
+    this.index = idx>=0 ? idx : 0;
+    this._renderCurrent();
+  }
+
+  showLoading(){
+    this.el.popup.classList.add("dp-visible");
+    this.el.loading.classList.add("dp-show");
+    this.el.error.classList.remove("dp-show");
+    this.el.empty.style.display = "none";
+  }
+  showError(message){
+    this.el.loading.classList.remove("dp-show");
+    this.el.error.classList.add("dp-show");
+    this.el.error.textContent = message;
+  }
+
+  showForObject(obj, anchorX, anchorY){
+    this.currentObj = obj;
+    this.attachments = obj.attachments;
+    this.index = 0;
+    this.popupEngine.setTool("none");
+    this.el.penToggle.classList.remove("dp-active");
+    this.el.loading.classList.remove("dp-show");
+    this.el.error.classList.remove("dp-show");
+
+    document.getElementById("hint").classList.add("dp-hidden");
+
+    const popup = this.el.popup;
+    popup.style.left = Math.min(anchorX, window.innerWidth - 300) + "px";
+    popup.style.top = Math.min(anchorY, window.innerHeight - 400) + "px";
+    popup.classList.add("dp-visible");
+    this._renderCurrent();
+  }
+  hide(){
+    this.el.popup.classList.remove("dp-visible");
+    this.currentObj = null;
+    document.getElementById("hint").classList.remove("dp-hidden");
+  }
+
+  async _addRealImage(){
+    if(!this.currentObj || !currentSelection) return;
+    this.el.fileInput.click();
+  }
+  async _onFileChosen(file){
+    if(!file || !this.currentObj || !currentSelection) return;
+    try{
+      const img = await tcUploadImageAttachment(currentSelection, file);
+      const currentActual = this._currentItem();
+      const actualIdx = this.currentObj.attachments.indexOf(currentActual);
+      this.currentObj.attachments.splice(actualIdx>=0 ? actualIdx+1 : this.currentObj.attachments.length, 0, img);
+      if(this.filter==="drawing"){
+        this.filter = "all";
+        this.el.thumbWrap.querySelectorAll("#dp-thumb-filter [data-filter]").forEach(b=>
+          b.classList.toggle("dp-active", b.dataset.filter==="all"));
+      }
+      const list = this._visibleList();
+      this.index = Math.max(0, list.indexOf(img));
+      this._renderCurrent();
+    }catch(err){
+      console.error("[TC] bilduppladdning misslyckades:", err);
+      alert("Kunde inte bifoga bilden: " + err.message);
+    }
+  }
+
+  async _renderCurrent(){
+    const list = this._visibleList();
+    const total = list.length;
+    this.el.counter.textContent = total ? `${this.index+1} / ${total}` : "0 / 0";
+    this.el.prev.disabled = this.index<=0;
+    this.el.next.disabled = this.index>=total-1;
+
+    if(!total){
+      this.el.title.textContent = "–"; this.el.meta.textContent = "";
+      this.el.empty.style.display = "flex";
+      this._resizeThumbCanvases();
+      this.popupEngine.items = [];
+      this.popupEngine.render();
+      return;
+    }
+    this.el.empty.style.display = "none";
+    const d = list[this.index];
+    this.el.title.textContent = `${kindIcon(d.kind)} ${d.name}`;
+    this.el.meta.textContent = kindMeta(d);
+    this._resizeThumbCanvases();
+    await renderAttachment(this.el.thumbBase, d);
+    await this.popupEngine.loadForDrawing();
+  }
+  _resizeThumbCanvases(){
+    const rect = this.el.thumbWrap.getBoundingClientRect();
+    [this.el.thumbBase, this.el.thumbAnnot].forEach(c=>{
+      c.width = Math.max(1, Math.round(rect.width));
+      c.height = Math.max(1, Math.round(rect.height));
+    });
+  }
+  _observeResize(){
+    const ro = new ResizeObserver(()=>{
+      const item = this._currentItem();
+      if(!item) return;
+      this._resizeThumbCanvases();
+      renderAttachment(this.el.thumbBase, item);
+      this.popupEngine.render();
+    });
+    ro.observe(this.el.thumbWrap);
+  }
+  _goPrev(){ if(this.index>0){ this.index--; this._renderCurrent(); } }
+  _goNext(){ if(this.index<this._visibleList().length-1){ this.index++; this._renderCurrent(); } }
+
+  _togglePopupPen(){
+    const next = this.popupEngine.tool==="pen" ? "none" : "pen";
+    this.popupEngine.setTool(next);
+    this.el.thumbAnnot.classList.toggle("dp-annot-active", next==="pen");
+    this.el.penToggle.classList.toggle("dp-active", next==="pen");
+  }
+
+  async _openExpanded(){
+    const list = this._visibleList();
+    if(!list.length || this.popupEngine.tool==="pen") return;
+    this.modalList = list;
+    this.modalIndex = this.index;
+    this.modalZoom = 1;
+    this.el.modal.classList.add("dp-visible");
+    this._setModalTool("select");
+    await this._renderModal();
+  }
+  _closeExpanded(){ this.el.modal.classList.remove("dp-visible"); }
+
+  async _renderModal(){
+    const d = this.modalList[this.modalIndex];
+    const total = this.modalList.length;
+    this.el.modalTitle.textContent = `${kindIcon(d.kind)} ${d.name} · ${kindMeta(d)}`;
+    this.el.modalCounter.textContent = `${this.modalIndex+1} / ${total}`;
+    this.el.modalPrev.disabled = this.modalIndex<=0;
+    this.el.modalNext.disabled = this.modalIndex>=total-1;
+    this.el.zoomLevel.textContent = `${Math.round(this.modalZoom*100)}%`;
+
+    const baseW=720, baseH=480;
+    const w=Math.round(baseW*this.modalZoom), h=Math.round(baseH*this.modalZoom);
+    [this.el.modalCanvas, this.el.modalAnnot].forEach(c=>{ c.width=w; c.height=h; });
+    await renderAttachment(this.el.modalCanvas, d);
+    await this.modalEngine.loadForDrawing();
+  }
+  _modalPrev(){ if(this.modalIndex>0){ this.modalIndex--; this._renderModal(); this.index=this.modalIndex; } }
+  _modalNext(){ if(this.modalIndex<this.modalList.length-1){ this.modalIndex++; this._renderModal(); this.index=this.modalIndex; } }
+  _zoom(delta){ this.modalZoom = Math.min(3, Math.max(0.4, this.modalZoom+delta)); this._renderModal(); }
+
+  _setModalTool(id){
+    this.modalEngine.setTool(id);
+    this._ribbonButtons.forEach(b=> b.classList.toggle("dp-active", b.dataset.tool===id));
+  }
+
+  _buildRibbon(){
+    const GROUPS = [
+      { label:"Verktyg", tools:[
+        {id:"select", icon:"↖", label:"Markera", title:"Markera, flytta och redigera. På en pratbubbla: dra i punkten (ringen) för att peka om, eller i fönstret för att flytta det."},
+        {id:"pen", icon:"✎", label:"Frihand"},
+      ]},
+      { label:"Text", tools:[
+        {id:"text", icon:"T", label:"Textruta"},
+        {id:"callout", icon:"💬", label:"Pratbubbla"},
+      ]},
+      { label:"Rita", tools:[
+        {id:"line", icon:"╱", label:"Linje"},
+        {id:"arrow", icon:"↗", label:"Pil"},
+        {id:"rect", icon:"▭", label:"Rektangel"},
+        {id:"ellipse", icon:"◯", label:"Ellips"},
+        {id:"cloud", icon:"☁", label:"Moln"},
+      ]},
+      { label:"Mät", tools:[
+        {id:"measureDistance", icon:"↔", label:"Avstånd"},
+        {id:"measurePerimeter", icon:"⬠", label:"Omkrets"},
+        {id:"measureArea", icon:"▦", label:"Area"},
+        {id:"calibrate", icon:"📏", label:"Kalibrera", title:"Dra en linje över en känd sträcka på ritningen och ange verklig längd, så visas mått i rätt enhet istället för px."},
+      ]},
+    ];
+    const container = document.getElementById("dp-ribbon-groups");
+    this._ribbonButtons = [];
+    GROUPS.forEach(group=>{
+      const g = document.createElement("div");
+      g.className = "dp-rgroup";
+      const row = document.createElement("div");
+      row.className = "dp-rgroup-btns";
+      group.tools.forEach(t=>{
+        const btn = document.createElement("button");
+        btn.className = "dp-tbtn";
+        btn.dataset.tool = t.id;
+        btn.title = t.title || t.label;
+        btn.innerHTML = `<span class="ic">${t.icon}</span><span>${t.label}</span>`;
+        btn.addEventListener("click", ()=> this._setModalTool(t.id));
+        row.appendChild(btn);
+        this._ribbonButtons.push(btn);
+      });
+      const label = document.createElement("span");
+      label.className = "dp-rgroup-label";
+      label.textContent = group.label;
+      g.appendChild(row); g.appendChild(label);
+      container.appendChild(g);
+    });
+
+    const COLORS = ["#e0393e","#3d9bff","#4caf7d","#e0a63a","#1a1a1a"];
+    const swatchWrap = document.getElementById("dp-color-swatches");
+    COLORS.forEach((c,i)=>{
+      const b = document.createElement("button");
+      b.className = "dp-swatch" + (i===0 ? " dp-active" : "");
+      b.style.background = c;
+      b.addEventListener("click", ()=>{
+        this.modalEngine.setColor(c);
+        swatchWrap.querySelectorAll(".dp-swatch").forEach(x=>x.classList.remove("dp-active"));
+        b.classList.add("dp-active");
+      });
+      swatchWrap.appendChild(b);
+    });
+
+    const WIDTHS = [1.5,2.5,4.5];
+    const widthWrap = document.getElementById("dp-width-btns");
+    WIDTHS.forEach((wd,i)=>{
+      const b = document.createElement("button");
+      b.className = "dp-widthdot" + (i===1 ? " dp-active" : "");
+      const dot = document.createElement("span");
+      const size = 4+i*4;
+      dot.style.width=size+"px"; dot.style.height=size+"px";
+      b.appendChild(dot);
+      b.addEventListener("click", ()=>{
+        this.modalEngine.setWidth(wd);
+        widthWrap.querySelectorAll(".dp-widthdot").forEach(x=>x.classList.remove("dp-active"));
+        b.classList.add("dp-active");
+      });
+      widthWrap.appendChild(b);
+    });
+
+    document.getElementById("dp-undo").addEventListener("click", ()=> this.modalEngine.undo());
+    document.getElementById("dp-clear-all").addEventListener("click", ()=> this.modalEngine.clearAll());
+  }
+
+  _cacheDom(){
+    this.el = {
+      popup: document.getElementById("dp-popup"),
+      header: document.getElementById("dp-header"),
+      title: document.getElementById("dp-title"),
+      meta: document.getElementById("dp-meta"),
+      thumbWrap: document.getElementById("dp-thumb-wrap"),
+      thumbBase: document.getElementById("dp-thumb-base"),
+      thumbAnnot: document.getElementById("dp-thumb-annot"),
+      thumbSaveFlag: document.getElementById("dp-save-flag"),
+      penToggle: document.getElementById("dp-pen-toggle"),
+      clearAnnot: document.getElementById("dp-clear-annot"),
+      addImage: document.getElementById("dp-add-image"),
+      empty: document.getElementById("dp-empty"),
+      loading: document.getElementById("dp-loading"),
+      error: document.getElementById("dp-error"),
+      prev: document.getElementById("dp-prev"),
+      next: document.getElementById("dp-next"),
+      counter: document.getElementById("dp-counter"),
+      close: document.getElementById("dp-close"),
+      expandBtn: document.getElementById("dp-expand-btn"),
+      fileInput: document.getElementById("dp-file-input"),
+
+      modal: document.getElementById("dp-modal"),
+      modalTitle: document.getElementById("dp-modal-title"),
+      modalCounter: document.getElementById("dp-counter2"),
+      modalPrev: document.getElementById("dp-modal-prev"),
+      modalNext: document.getElementById("dp-modal-next"),
+      modalClose: document.getElementById("dp-modal-close"),
+      modalCanvas: document.getElementById("dp-modal-canvas"),
+      modalAnnot: document.getElementById("dp-modal-annot"),
+      modalCanvasWrap: document.getElementById("dp-modal-canvas-wrap"),
+      modalSaveFlag: document.getElementById("dp-modal-save-flag"),
+      zoomIn: document.getElementById("dp-zoom-in"),
+      zoomOut: document.getElementById("dp-zoom-out"),
+      zoomLevel: document.getElementById("dp-zoom-level"),
+    };
+  }
+  _bindEvents(){
+    this.el.prev.addEventListener("click", e=>{e.stopPropagation(); this._goPrev();});
+    this.el.next.addEventListener("click", e=>{e.stopPropagation(); this._goNext();});
+    this.el.close.addEventListener("click", e=>{e.stopPropagation(); this.hide();});
+    this.el.expandBtn.addEventListener("click", e=>{e.stopPropagation(); this._openExpanded();});
+    this.el.thumbWrap.addEventListener("click", e=>{
+      if(e.target.closest("#dp-thumb-toolbar") || e.target.closest("#dp-thumb-filter")) return;
+      this._openExpanded();
+    });
+    this.el.penToggle.addEventListener("click", e=>{e.stopPropagation(); this._togglePopupPen();});
+    this.el.clearAnnot.addEventListener("click", e=>{e.stopPropagation(); this.popupEngine.clearAll();});
+    this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addRealImage();});
+    this.el.fileInput.addEventListener("change", e=>{
+      const file = e.target.files?.[0];
+      this._onFileChosen(file);
+      e.target.value = "";
+    });
+
+    this.el.modalPrev.addEventListener("click", ()=>this._modalPrev());
+    this.el.modalNext.addEventListener("click", ()=>this._modalNext());
+    this.el.modalClose.addEventListener("click", ()=>this._closeExpanded());
+    this.el.zoomIn.addEventListener("click", ()=>this._zoom(0.25));
+    this.el.zoomOut.addEventListener("click", ()=>this._zoom(-0.25));
+
+    document.addEventListener("keydown",(e)=>{
+      if(!this.el.modal.classList.contains("dp-visible")) return;
+      if(e.key==="Escape" && this.modalEngine.tool==="select" && !this.modalEngine.editor) this._closeExpanded();
+      if(e.key==="ArrowLeft" && this.modalEngine.tool==="select") this._modalPrev();
+      if(e.key==="ArrowRight" && this.modalEngine.tool==="select") this._modalNext();
+    });
+  }
+  _makeDraggable(){
+    let dragging=false, offX=0, offY=0;
+    this.el.header.addEventListener("mousedown",(e)=>{
+      dragging=true;
+      const r=this.el.popup.getBoundingClientRect();
+      offX=e.clientX-r.left; offY=e.clientY-r.top;
+    });
+    document.addEventListener("mousemove",(e)=>{
+      if(!dragging) return;
+      this.el.popup.style.left=(e.clientX-offX)+"px";
+      this.el.popup.style.top=(e.clientY-offY)+"px";
+    });
+    document.addEventListener("mouseup",()=>dragging=false);
+  }
+}
+
+/* =====================================================================
+   DEL 7 — INIT
+   ===================================================================== */
+const widget = new DrawingPreviewWidget();
+
+if(window.WorkspaceAPI){
+  initExtension();
+}else{
+  console.warn("[TC] trimble-connect-workspace-api hittades inte (window.WorkspaceAPI saknas) — kör i fristående testläge.");
+  setStatus("error", "trimble-connect-workspace-api saknas");
+  if(TC_CONFIG.MOCK_FALLBACK) initMockStandalone();
+}
+</script>
+</body>
+</html>

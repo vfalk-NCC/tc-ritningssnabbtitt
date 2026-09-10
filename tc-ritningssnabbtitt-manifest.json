@@ -1,0 +1,12 @@
+{
+  "_comment": "SKELETT — jag har inte kunnat verifiera det exakta manifest-schemat mot Trimbles dokumentation eller mot era andra extensions. Kopiera fältstrukturen (särskilt 'location'/'type'/'size'-fälten, och ev. auth-relaterade fält) från manifest.json i en av era befintliga extensions (t.ex. PDF-overlay eller Rita & extrudera) och byt bara ut id/name/description/url nedan. Radera denna _comment-nyckel innan registrering.",
+
+  "id": "com.dittforetag.ritningssnabbtitt",
+  "name": "Ritningssnabbtitt",
+  "description": "Snabbtitt på kopplade ritningar och bilder vid objektklick, med markup (frihand, text, pratbubbla, mått) som sparas mot Trimble Connect.",
+  "version": "0.1.0",
+
+  "url": "https://<ditt-github-användarnamn>.github.io/<repo>/index.html",
+
+  "icon": "icon.png"
+}
