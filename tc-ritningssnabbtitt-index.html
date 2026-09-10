@@ -311,6 +311,7 @@ async function initExtension(){
     // VERIFIERA: hämta en access token för direkta REST-anrop mot Core API.
     // Workspace API:t ovan ger bara UI/viewer-hooks, INTE en REST-token
     // (se authenticate() nedan för resonemang).
+    setStatus("connecting", "Väntar på behörighet — godkänn ev. dialog i Trimble Connect…");
     tcAccessToken = await authenticate();
 
     setStatus("connected", "Ansluten");
@@ -355,13 +356,36 @@ async function authenticate(){
     throw new Error("extension.requestPermission saknas i api-ytan — kontrollera SDK-version.");
   }
 
+  // Bekräftat mot ExtensionAPI.d.ts (0.3.34): requestPermission() löser till
+  // "The status for requested permission" — INTE token-strängen själv. Den
+  // troliga anledningen till att detta tar tid (och tidigare tajmade ut på
+  // 10s) är att Trimble Connect visar en godkännandedialog för användaren
+  // innan "extension.accessToken" skickas; den kan ta längre än 10s att
+  // hinna klicka bort. Tidsgränsen är därför höjd rejält (60s) och statusen
+  // i UI:t (se initExtension) uppmanar användaren att kika efter en sådan
+  // dialog i Trimble Connect medan vi väntar.
   const tokenPromise = new Promise((resolve, reject) => {
     _pendingAccessTokenResolvers.push(resolve);
-    setTimeout(() => reject(new Error("Timeout: fick inget extension.accessToken-event inom 10s")), 10000);
+    setTimeout(() => reject(new Error(
+      "Timeout: fick inget extension.accessToken-event inom 60s. " +
+      "Kontrollera om Trimble Connect visade en behörighets-/godkännandedialog " +
+      "som väntar på klick, och att extensionen har rätt att begära accesstoken " +
+      "i sin manifest-konfiguration."
+    )), 60000);
   });
 
   const status = await tcApi.extension.requestPermission("accesstoken");
   console.log("[TC] requestPermission('accesstoken') status:", status);
+  // Om status:et redan ÄR token-strängen (avviker från den dokumenterade
+  // kontraktet men förekommer i vissa SDK-versioner) — lös direkt istället
+  // för att vänta på ett event som aldrig kommer.
+  if(status && status !== "granted" && status !== "denied" && status !== "pending" && status.length > 20){
+    console.log("[TC] requestPermission returnerade troligen token direkt, väntar inte på event.");
+    const resolvers = _pendingAccessTokenResolvers.splice(0);
+    resolvers.forEach(r => r(status));
+  } else if(status === "denied"){
+    throw new Error("Användaren nekade behörighet till accesstoken (status: denied).");
+  }
 
   const token = await tokenPromise;
   if(!token) throw new Error("Access token saknades i extension.accessToken-eventet.");
@@ -989,6 +1013,13 @@ function renderPlaceholder(canvas, item, message){
 }
 
 async function renderRealDrawing(canvas, drawing){
+  // I fristående/mock-läge (ingen access token) finns ingen riktig fil att
+  // hämta — det är förväntat, inte ett fel, så vi visar platshållaren direkt
+  // istället för att först försöka och logga en missvisande varning.
+  if(!tcAccessToken && TC_CONFIG.MOCK_FALLBACK){
+    renderPlaceholder(canvas, drawing, `${drawing.name}\n(testdata — ingen TC-anslutning)`);
+    return;
+  }
   try{
     const blob = await downloadAttachmentBlob(drawing.id, drawing.versionId);
     if(!blob || !window.pdfjsLib) throw new Error("Ingen fildata / pdf.js saknas");
@@ -1008,6 +1039,10 @@ async function renderRealDrawing(canvas, drawing){
 }
 
 async function renderRealImage(canvas, imgItem){
+  if(!tcAccessToken && TC_CONFIG.MOCK_FALLBACK){
+    renderPlaceholder(canvas, imgItem, `${imgItem.name}\n(testdata — ingen TC-anslutning)`);
+    return;
+  }
   try{
     const blob = await downloadAttachmentBlob(imgItem.id, imgItem.versionId);
     if(!blob) throw new Error("Ingen fildata");
