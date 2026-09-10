@@ -139,6 +139,21 @@
 
   .dp-inline-editor{ position:absolute; z-index:5; background:rgba(255,255,255,.98); border:2px solid #e0393e;
     border-radius:4px; padding:4px 6px; font:12px "Segoe UI", Arial; color:#1a1a1a; resize:none; }
+
+  /* ---------- Filväljare (bläddra & länka befintliga TC-filer) ---------- */
+  #dp-filepicker{ position:fixed; inset:10% 20%; min-width:280px; background:var(--panel);
+    border:1px solid var(--border); border-radius:8px; z-index:150; display:none; flex-direction:column;
+    box-shadow:0 10px 40px rgba(0,0,0,.6); }
+  #dp-filepicker.dp-visible{ display:flex; }
+  #dp-filepicker-header{ display:flex; align-items:center; gap:8px; padding:10px 14px;
+    border-bottom:1px solid var(--border); font-size:12px; flex:0 0 auto; }
+  #dp-fp-path{ flex:1; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #dp-filepicker-list{ flex:1; overflow:auto; padding:6px; }
+  .dp-fp-item{ display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:5px;
+    cursor:pointer; font-size:13px; }
+  .dp-fp-item:hover{ background:#333; }
+  .dp-fp-item .ic{ width:18px; text-align:center; flex:0 0 auto; }
+  .dp-fp-empty{ color:var(--text-dim); font-size:12px; padding:20px; text-align:center; }
 </style>
 </head>
 <body>
@@ -167,6 +182,7 @@
           <button class="dp-icon-btn" data-filter="image" title="Visa bara bilder">🖼</button>
         </div>
         <div id="dp-thumb-toolbar">
+          <button class="dp-icon-btn" id="dp-link-existing" title="Länka en fil som redan finns i Trimble Connect (ingen uppladdning)">🔗</button>
           <button class="dp-icon-btn" id="dp-add-image" title="Bifoga fil (bild eller PDF-ritning) och koppla till objektet">📎</button>
           <button class="dp-icon-btn" id="dp-pen-toggle" title="Snabbanteckning (frihand)">✎</button>
           <button class="dp-icon-btn" id="dp-clear-annot" title="Rensa anteckningar">🗑</button>
@@ -235,6 +251,15 @@
 </div>
 
 <input type="file" id="dp-file-input" accept="image/*,application/pdf,.pdf" style="display:none;">
+
+<div id="dp-filepicker">
+  <div id="dp-filepicker-header">
+    <button class="dp-btn" id="dp-fp-up" title="Upp en nivå">⬆ Upp</button>
+    <span id="dp-fp-path">–</span>
+    <button class="dp-btn" id="dp-fp-close">Stäng ✕</button>
+  </div>
+  <div id="dp-filepicker-list"></div>
+</div>
 
 <script>
 /* =====================================================================
@@ -556,6 +581,19 @@ async function downloadAttachmentBlob(fileId, versionId, format){
      sourceId}]}, target:{type:"FILE", id}} skapar själva länken
      mellan 3D-objektet och filen.
    --------------------------------------------------------------------- */
+let _rootFolderIdCache = null;
+let _rootFolderIdCacheProjectId = null;
+async function getProjectRootId(){
+  const projectId = tcProject?.id;
+  if(!projectId) throw new Error("Inget projekt-id tillgängligt.");
+  if(_rootFolderIdCache && _rootFolderIdCacheProjectId === projectId) return _rootFolderIdCache;
+  const project = await tcFetchJson(`/projects/${projectId}`);
+  if(!project.rootId) throw new Error("Kunde inte hitta projektets rotmapp (rootId).");
+  _rootFolderIdCache = project.rootId;
+  _rootFolderIdCacheProjectId = projectId;
+  return project.rootId;
+}
+
 const TC_DATA_FOLDER_NAME = "Ritningssnabbtitt-data";
 let _dataFolderIdCache = null;
 let _dataFolderIdCacheProjectId = null;
@@ -565,10 +603,7 @@ async function ensureDataFolder(){
   if(!projectId) throw new Error("Inget projekt-id — kan inte hitta/skapa datamapp.");
   if(_dataFolderIdCache && _dataFolderIdCacheProjectId === projectId) return _dataFolderIdCache;
 
-  const project = await tcFetchJson(`/projects/${projectId}`);
-  const rootId = project.rootId;
-  if(!rootId) throw new Error("Kunde inte hitta projektets rotmapp (rootId).");
-
+  const rootId = await getProjectRootId();
   const items = await tcFetchJson(`/folders/${rootId}/items`);
   const list = Array.isArray(items) ? items : items?.items || [];
   const existing = list.find(it => it.type === "FOLDER" && it.name === TC_DATA_FOLDER_NAME);
@@ -752,6 +787,110 @@ async function tcUploadAttachment(sel, file){
     kind: "drawing", id: fileId, versionId, name: filename,
     revision: "–", discipline: "–", color: "#3d9bff",
   };
+}
+
+/* =====================================================================
+   DEL 1c — BLÄDDRA & LÄNKA BEFINTLIGA FILER (ingen uppladdning)
+
+   Svar på: "jag har redan ritningar/foton i Trimble Connect, jag vill
+   INTE ladda upp igen från datorn". 📎-flödet ovan skapar alltid en NY
+   fil i TC. Det här är ett separat flöde: bläddra projektets befintliga
+   mappar (samma /folders/{id}/items-anrop som ensureDataFolder redan
+   använder) och skapa en Object Link direkt mot en fil som redan finns,
+   utan att röra filens innehåll alls.
+   ===================================================================== */
+async function tcListFolderItems(folderId){
+  const items = await tcFetchJson(`/folders/${folderId}/items`);
+  return Array.isArray(items) ? items : items?.items || [];
+}
+
+async function tcLinkExistingFile(sel, file){
+  if(!tcAccessToken){
+    throw new Error("Kräver en aktiv Trimble Connect-anslutning — går inte att bläddra i testläge.");
+  }
+  if(!sel?.modelId || !sel?.guid){
+    throw new Error("Inget valt objekt att koppla filen till.");
+  }
+  await createObjectLink(sel.modelId, sel.guid, file.id);
+  return IMAGE_EXT.test(file.name || "") ? {
+    kind: "image", id: file.id, versionId: file.versionId, name: file.name,
+    capturedAt: file.createdOn ? new Date(file.createdOn).toLocaleDateString("sv-SE") : "–",
+  } : {
+    kind: "drawing", id: file.id, versionId: file.versionId, name: file.name,
+    revision: "–", discipline: "–", color: "#3d9bff",
+  };
+}
+
+/* Enkel mappbläddrare som popup-panel. onPick(file) anropas när användaren
+   klickar en FIL (inte mapp) i listan. */
+class ExistingFilePicker{
+  constructor(onPick){
+    this.onPick = onPick;
+    this.stack = []; // [{id, name}, ...] — sista elementet är aktuell mapp
+    this.el = {
+      root: document.getElementById("dp-filepicker"),
+      path: document.getElementById("dp-fp-path"),
+      list: document.getElementById("dp-filepicker-list"),
+      up: document.getElementById("dp-fp-up"),
+      close: document.getElementById("dp-fp-close"),
+    };
+    this.el.up.addEventListener("click", e=>{ e.stopPropagation(); this._up(); });
+    this.el.close.addEventListener("click", e=>{ e.stopPropagation(); this.hide(); });
+  }
+  async open(){
+    if(!tcAccessToken){
+      alert("Bläddring i Trimble Connect kräver en aktiv anslutning — fungerar inte i fristående testläge.");
+      return;
+    }
+    this.el.root.classList.add("dp-visible");
+    this.el.list.innerHTML = `<div class="dp-fp-empty">Laddar…</div>`;
+    try{
+      const rootId = await getProjectRootId();
+      this.stack = [{ id: rootId, name: tcProject?.name || "Projektrot" }];
+      await this._render();
+    }catch(err){
+      this.el.list.innerHTML = `<div class="dp-fp-empty">Kunde inte läsa filträdet: ${err.message}</div>`;
+    }
+  }
+  hide(){ this.el.root.classList.remove("dp-visible"); }
+  _up(){ if(this.stack.length>1){ this.stack.pop(); this._render(); } }
+  async _render(){
+    const cur = this.stack[this.stack.length-1];
+    this.el.path.textContent = this.stack.map(s=>s.name).join(" / ");
+    this.el.up.disabled = this.stack.length<=1;
+    this.el.list.innerHTML = `<div class="dp-fp-empty">Laddar…</div>`;
+    let items;
+    try{
+      items = await tcListFolderItems(cur.id);
+    }catch(err){
+      this.el.list.innerHTML = `<div class="dp-fp-empty">Kunde inte läsa mappen: ${err.message}</div>`;
+      return;
+    }
+    if(!items.length){
+      this.el.list.innerHTML = `<div class="dp-fp-empty">Mappen är tom</div>`;
+      return;
+    }
+    this.el.list.innerHTML = "";
+    items.slice()
+      .sort((a,b)=> a.type===b.type ? String(a.name).localeCompare(b.name) : (a.type==="FOLDER" ? -1 : 1))
+      .forEach(it=>{
+        const row = document.createElement("div");
+        row.className = "dp-fp-item";
+        const isFolder = it.type === "FOLDER";
+        const icon = isFolder ? "📁" : (IMAGE_EXT.test(it.name||"") ? "🖼" : "📄");
+        row.innerHTML = `<span class="ic">${icon}</span><span>${it.name || "(namnlös)"}</span>`;
+        row.addEventListener("click", ()=>{
+          if(isFolder){
+            this.stack.push({ id: it.id, name: it.name });
+            this._render();
+          } else {
+            this.onPick(it);
+            this.hide();
+          }
+        });
+        this.el.list.appendChild(row);
+      });
+  }
 }
 
 /* =====================================================================
@@ -1419,6 +1558,8 @@ class DrawingPreviewWidget{
     this._makeDraggable();
     this._observeResize();
 
+    this.filePicker = new ExistingFilePicker(file => this._linkExistingFile(file));
+
     this.popupEngine = new AnnotationEngine(this.el.thumbAnnot, {
       getDrawingId: ()=>this._currentItem()?.id,
       saveFlagEl: this.el.thumbSaveFlag,
@@ -1504,23 +1645,41 @@ class DrawingPreviewWidget{
     if(!file || !this.currentObj || !currentSelection) return;
     try{
       const item = await tcUploadAttachment(currentSelection, file);
-      const currentActual = this._currentItem();
-      const actualIdx = this.currentObj.attachments.indexOf(currentActual);
-      this.currentObj.attachments.splice(actualIdx>=0 ? actualIdx+1 : this.currentObj.attachments.length, 0, item);
-      // Visa den nyss bifogade filen även om ett filter (t.ex. bara bilder)
-      // aktivt skulle dölja den nya typen.
-      if(this.filter!=="all" && this.filter!==item.kind){
-        this.filter = "all";
-        this.el.thumbWrap.querySelectorAll("#dp-thumb-filter [data-filter]").forEach(b=>
-          b.classList.toggle("dp-active", b.dataset.filter==="all"));
-      }
-      const list = this._visibleList();
-      this.index = Math.max(0, list.indexOf(item));
-      this._renderCurrent();
+      this._insertAttachment(item);
     }catch(err){
       console.error("[TC] filuppladdning misslyckades:", err);
       alert("Kunde inte bifoga filen: " + err.message);
     }
+  }
+
+  async _linkExistingFile(file){
+    if(!this.currentObj || !currentSelection){
+      alert("Markera ett objekt i 3D-vyn innan du länkar en befintlig fil till det.");
+      return;
+    }
+    try{
+      const item = await tcLinkExistingFile(currentSelection, file);
+      this._insertAttachment(item);
+    }catch(err){
+      console.error("[TC] länkning av befintlig fil misslyckades:", err);
+      alert("Kunde inte länka filen: " + err.message);
+    }
+  }
+
+  // Lägger till en nykopplad bilaga (uppladdad ELLER länkad från befintligt
+  // TC-innehåll) i listan och visar den, oavsett aktivt filter.
+  _insertAttachment(item){
+    const currentActual = this._currentItem();
+    const actualIdx = this.currentObj.attachments.indexOf(currentActual);
+    this.currentObj.attachments.splice(actualIdx>=0 ? actualIdx+1 : this.currentObj.attachments.length, 0, item);
+    if(this.filter!=="all" && this.filter!==item.kind){
+      this.filter = "all";
+      this.el.thumbWrap.querySelectorAll("#dp-thumb-filter [data-filter]").forEach(b=>
+        b.classList.toggle("dp-active", b.dataset.filter==="all"));
+    }
+    const list = this._visibleList();
+    this.index = Math.max(0, list.indexOf(item));
+    this._renderCurrent();
   }
 
   async _renderCurrent(){
@@ -1705,6 +1864,7 @@ class DrawingPreviewWidget{
       penToggle: document.getElementById("dp-pen-toggle"),
       clearAnnot: document.getElementById("dp-clear-annot"),
       addImage: document.getElementById("dp-add-image"),
+      linkExisting: document.getElementById("dp-link-existing"),
       empty: document.getElementById("dp-empty"),
       loading: document.getElementById("dp-loading"),
       error: document.getElementById("dp-error"),
@@ -1742,6 +1902,7 @@ class DrawingPreviewWidget{
     this.el.penToggle.addEventListener("click", e=>{e.stopPropagation(); this._togglePopupPen();});
     this.el.clearAnnot.addEventListener("click", e=>{e.stopPropagation(); this.popupEngine.clearAll();});
     this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addAttachment();});
+    this.el.linkExisting.addEventListener("click", e=>{e.stopPropagation(); this.filePicker.open();});
     this.el.fileInput.addEventListener("change", e=>{
       const file = e.target.files?.[0];
       this._onFileChosen(file);
