@@ -114,6 +114,25 @@
   #dp-modal-canvas-wrap{ position:relative; display:inline-block; box-shadow:0 0 30px rgba(0,0,0,.6); }
   #dp-modal-canvas, #dp-modal-annot{ display:block; }
   #dp-modal-annot{ position:absolute; top:0; left:0; cursor:crosshair; }
+  /* Panoreringsverktyg: grab/grabbing-markör istället för rit-korshåret. */
+  #dp-modal-canvas-wrap.dp-pan-idle, #dp-modal-canvas-wrap.dp-pan-idle #dp-modal-annot{ cursor:grab; }
+  #dp-modal-canvas-wrap.dp-panning, #dp-modal-canvas-wrap.dp-panning #dp-modal-annot{ cursor:grabbing !important; }
+
+  /* ---------- Bilagelista (filnamn + kommentar, klick väljer & markerar i 3D) ---------- */
+  #dp-attach-list{ max-height:110px; overflow-y:auto; flex:0 0 auto;
+    background:var(--panel-2); border-bottom:1px solid var(--border); }
+  .dp-attach-row{ display:flex; align-items:center; gap:6px; padding:5px 12px; cursor:pointer; font-size:11px; }
+  .dp-attach-row:hover{ background:#333; }
+  .dp-attach-row.dp-active{ background:rgba(61,155,255,.18); }
+  .dp-attach-icon{ flex:0 0 auto; }
+  .dp-attach-name{ flex:0 1 auto; font-weight:600; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; max-width:42%; }
+  .dp-attach-comment{ flex:1 1 auto; min-width:0; background:none; border:1px solid transparent;
+    color:var(--text-dim); font-size:11px; padding:3px 5px; border-radius:3px; font-family:inherit; }
+  .dp-attach-comment::placeholder{ color:#5a5c60; }
+  .dp-attach-comment:hover{ border-color:var(--border); }
+  .dp-attach-comment:focus{ border-color:var(--accent); background:#1c1d20; color:var(--text); outline:none; }
+  #dp-attach-empty{ padding:10px 12px; font-size:11px; color:var(--text-dim); }
 
   .dp-inline-editor{ position:absolute; z-index:5; background:rgba(255,255,255,.98); border:2px solid #e0393e;
     border-radius:4px; padding:4px 6px; font:12px "Segoe UI", Arial; color:#1a1a1a; resize:none; }
@@ -161,6 +180,11 @@
         <button class="dp-icon-btn" id="dp-add-image" title="Bifoga fil (bild eller PDF-ritning) och koppla till objektet">📎</button>
         <span id="dp-modal-save-flag">Sparat ✓</span>
       </div>
+
+      <!-- Lista över alla kopplade filer för objektet: filnamn + valfri
+           kommentar. Klick på raden (inte kommentarfältet) visar filen OCH
+           markerar objektet i 3D-modellen igen. -->
+      <div id="dp-attach-list"></div>
 
       <div id="dp-modal-nav">
         <button class="dp-btn" id="dp-modal-prev">‹ Föreg.</button>
@@ -1119,6 +1143,18 @@ function renderPlaceholder(canvas, item, message){
   ctx.textAlign = "left";
 }
 
+/* Cache av nedladdat/uppackat filinnehåll per bilaga-id. Utan den skulle
+   varje scrollhjuls-zoom-steg eller panel-resize trigga en ny nedladdning +
+   ny PDF-parsning från TC (renderAttachment anropas om och om igen med
+   samma item när canvasstorleken ändras) — särskilt kostsamt nu när
+   scrollzoom kan trigga många renderingar snabbt efter varandra. */
+const _attachmentCache = new Map(); // id -> { blob, pdfDoc, bitmap }
+function _cacheEntry(id){
+  let e = _attachmentCache.get(id);
+  if(!e){ e = {}; _attachmentCache.set(id, e); }
+  return e;
+}
+
 async function renderRealDrawing(canvas, drawing){
   // I fristående/mock-läge (ingen access token) finns ingen riktig fil att
   // hämta — det är förväntat, inte ett fel, så vi visar platshållaren direkt
@@ -1128,11 +1164,14 @@ async function renderRealDrawing(canvas, drawing){
     return;
   }
   try{
-    const blob = await downloadAttachmentBlob(drawing.id, drawing.versionId);
-    if(!blob || !window.pdfjsLib) throw new Error("Ingen fildata / pdf.js saknas");
-    const buf = await blob.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    const page = await pdf.getPage(drawing.page || 1); // TODO: sidväljare för fler-sidiga PDF:er
+    const entry = _cacheEntry(drawing.id);
+    if(!entry.blob) entry.blob = await downloadAttachmentBlob(drawing.id, drawing.versionId);
+    if(!entry.blob || !window.pdfjsLib) throw new Error("Ingen fildata / pdf.js saknas");
+    if(!entry.pdfDoc){
+      const buf = await entry.blob.arrayBuffer();
+      entry.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+    }
+    const page = await entry.pdfDoc.getPage(drawing.page || 1); // TODO: sidväljare för fler-sidiga PDF:er
     const viewport = page.getViewport({ scale: 1 });
     const scale = Math.min(canvas.width / viewport.width, canvas.height / viewport.height);
     const scaledViewport = page.getViewport({ scale });
@@ -1151,9 +1190,11 @@ async function renderRealImage(canvas, imgItem){
     return;
   }
   try{
-    const blob = await downloadAttachmentBlob(imgItem.id, imgItem.versionId);
-    if(!blob) throw new Error("Ingen fildata");
-    const bitmap = await createImageBitmap(blob);
+    const entry = _cacheEntry(imgItem.id);
+    if(!entry.blob) entry.blob = await downloadAttachmentBlob(imgItem.id, imgItem.versionId);
+    if(!entry.blob) throw new Error("Ingen fildata");
+    if(!entry.bitmap) entry.bitmap = await createImageBitmap(entry.blob);
+    const bitmap = entry.bitmap;
     const ctx = canvas.getContext("2d");
     const w = canvas.width, h = canvas.height;
     ctx.fillStyle = "#000"; ctx.fillRect(0,0,w,h);
@@ -1201,6 +1242,22 @@ function saveAnnotations(drawingId, data, flagEl){
       }
     })
     .catch(err=>console.error("Kunde inte spara anteckning:", err));
+}
+
+/* Fritextkommentar per bilaga ("vad fotot är taget på" / "vad pdfen visar"),
+   sparad i samma companion-fil som markup (items/scale) — samma fil, samma
+   Object Link, bara ett extra fält. Ingen ny TC-mekanism behövs. */
+async function getAttachmentComment(drawingId){
+  const data = await loadAnnotations(drawingId);
+  return data?.comment || "";
+}
+async function setAttachmentComment(drawingId, comment, flagEl){
+  // Läs in (ev. cachead) markup FÖRST så vi inte skriver över befintliga
+  // items/scale med tomma värden om detta råkar köras innan listans egen
+  // inläsning hunnit klart.
+  const data = await loadAnnotations(drawingId);
+  data.comment = comment;
+  saveAnnotations(drawingId, data, flagEl);
 }
 
 /* =====================================================================
@@ -1262,7 +1319,9 @@ class AnnotationEngine{
   _dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
 
   _onDown(e){
-    if(this.tool==="none" || this.editor) return;
+    // "pan" hanteras helt av DrawingPreviewWidget (panorerar scroll-
+    // containern) — rit-motorn ska inte reagera på pekdon i det läget.
+    if(this.tool==="none" || this.tool==="pan" || this.editor) return;
     e.preventDefault();
     const p = this._pos(e);
 
@@ -1510,6 +1569,7 @@ class DrawingPreviewWidget{
     this.currentObj = null;
     this._cacheDom();
     this._bindEvents();
+    this._bindPan();
     this._observeResize();
 
     this.filePicker = new ExistingFilePicker(file => this._linkExistingFile(file));
@@ -1583,10 +1643,12 @@ class DrawingPreviewWidget{
     this.el.view.classList.add("dp-visible");
     this._setTool("select");
     this._renderView();
+    this._renderAttachList();
   }
   hide(){
     this.el.view.classList.remove("dp-visible");
     this.currentObj = null;
+    this.el.attachList.innerHTML = "";
     document.getElementById("hint").classList.remove("dp-hidden");
   }
 
@@ -1633,6 +1695,7 @@ class DrawingPreviewWidget{
     const list = this._visibleList();
     this.index = Math.max(0, list.indexOf(item));
     this._renderView();
+    this._renderAttachList();
   }
 
   // Ersätter de gamla _renderCurrent (popup-thumbnail) + _renderModal
@@ -1658,6 +1721,7 @@ class DrawingPreviewWidget{
     this._resizeCanvases();
     await renderAttachment(this.el.canvas, d);
     await this.engine.loadForDrawing();
+    this._highlightActiveRow();
   }
   // Canvasen fyller tillgänglig plats i panelen (istället för den gamla
   // fasta 720×480-storleken som antog ett fullskärms-overlay över hela
@@ -1678,17 +1742,184 @@ class DrawingPreviewWidget{
   }
   _goPrev(){ if(this.index>0){ this.index--; this._renderView(); } }
   _goNext(){ if(this.index<this._visibleList().length-1){ this.index++; this._renderView(); } }
-  _zoom(delta){ this.zoom = Math.min(3, Math.max(0.4, this.zoom+delta)); this._renderView(); }
+  // Maxzoom höjd från 300% till 1000% på begäran.
+  _zoom(delta){ this.zoom = Math.min(10, Math.max(0.4, this.zoom+delta)); this._renderView(); }
 
   _setTool(id){
     this.engine.setTool(id);
     this._ribbonButtons.forEach(b=> b.classList.toggle("dp-active", b.dataset.tool===id));
+    // grab-markör så länge panoreringsverktyget är valt (även innan man
+    // börjat dra) — "dp-panning" (grabbing) sätts separat under själva draget.
+    this.el.canvasWrap.classList.toggle("dp-pan-idle", id==="pan");
+  }
+
+  /* ---------------------------------------------------------------------
+     Panorering: dra med panoreringsverktyget för att scrolla runt i en
+     inzoomad ritning/bild. dp-modal-body har overflow:auto sedan tidigare
+     (så att scrollbars/styrplatta redan fungerade) — det här lägger bara
+     till drag-att-panorera som ett alternativ, styrt av ribbonens "Panorera"
+     -verktyg, ungefär som i vanliga bildvisare/kartor.
+     --------------------------------------------------------------------- */
+  _bindPan(){
+    let dragging=false, startX=0, startY=0, startL=0, startT=0;
+    const wrap = this.el.canvasWrap;
+    wrap.addEventListener("pointerdown", e=>{
+      if(this.engine.tool!=="pan") return;
+      dragging = true;
+      startX = e.clientX; startY = e.clientY;
+      startL = this.el.body.scrollLeft; startT = this.el.body.scrollTop;
+      wrap.classList.add("dp-panning");
+      try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
+    });
+    wrap.addEventListener("pointermove", e=>{
+      if(!dragging) return;
+      this.el.body.scrollLeft = startL - (e.clientX-startX);
+      this.el.body.scrollTop = startT - (e.clientY-startY);
+    });
+    const end = ()=>{ dragging=false; wrap.classList.remove("dp-panning"); };
+    wrap.addEventListener("pointerup", end);
+    wrap.addEventListener("pointercancel", end);
+    wrap.addEventListener("pointerleave", end);
+  }
+
+  /* ---------------------------------------------------------------------
+     Scrollhjuls-zoom, upp till 1000%. Zoomar kring muspekarens position
+     (samma känsla som Kartor/PDF-läsare) istället för alltid mot hörnet.
+     Zoomsteg batchas till en gång per animationsframe eftersom varje steg
+     annars skulle trigga en full omrendering (om än cachead, se DEL 3).
+     --------------------------------------------------------------------- */
+  _onWheelZoom(e){
+    if(!this.currentObj) return;
+    e.preventDefault();
+    const body = this.el.body;
+    const rect = body.getBoundingClientRect();
+    if(!this._zoomGesture){
+      this._zoomGesture = {
+        startZoom: this.zoom,
+        cx: e.clientX - rect.left,
+        cy: e.clientY - rect.top,
+        contentX: e.clientX - rect.left + body.scrollLeft,
+        contentY: e.clientY - rect.top + body.scrollTop,
+      };
+    }
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    this.zoom = Math.min(10, Math.max(0.4, this.zoom * factor));
+    if(this._zoomRaf) return;
+    this._zoomRaf = requestAnimationFrame(async ()=>{
+      this._zoomRaf = null;
+      const g = this._zoomGesture; this._zoomGesture = null;
+      await this._renderView();
+      if(g && g.startZoom){
+        const ratio = this.zoom / g.startZoom;
+        body.scrollLeft = g.contentX*ratio - g.cx;
+        body.scrollTop = g.contentY*ratio - g.cy;
+      }
+    });
+  }
+
+  /* ---------------------------------------------------------------------
+     Bilagelista: filnamn + valfri kommentar för ALLA bilagor på objektet
+     (oavsett aktivt filter). Klick på en rad visar den filen och markerar
+     motsvarande objekt i 3D-modellen igen (svar på: "kunna klicka på fotot/
+     pdfen och då ska objektet markeras i modellen").
+     --------------------------------------------------------------------- */
+  _renderAttachList(){
+    const box = this.el.attachList;
+    box.innerHTML = "";
+    if(!this.attachments.length){
+      const empty = document.createElement("div");
+      empty.id = "dp-attach-empty";
+      empty.textContent = "Inga kopplade filer ännu.";
+      box.appendChild(empty);
+      return;
+    }
+    this.attachments.forEach(item=>{
+      const row = document.createElement("div");
+      row.className = "dp-attach-row";
+      row.dataset.id = item.id;
+
+      const icon = document.createElement("span");
+      icon.className = "dp-attach-icon";
+      icon.textContent = kindIcon(item.kind);
+
+      const name = document.createElement("span");
+      name.className = "dp-attach-name";
+      name.textContent = item.name;
+      name.title = item.name;
+
+      const comment = document.createElement("input");
+      comment.className = "dp-attach-comment";
+      comment.type = "text";
+      comment.placeholder = "Lägg till kommentar…";
+      comment.title = "Kommentar (t.ex. vad fotot är taget på, eller vad ritningen visar)";
+
+      row.append(icon, name, comment);
+      box.appendChild(row);
+
+      row.addEventListener("click", e=>{
+        if(e.target === comment) return;
+        this._selectAttachment(item);
+      });
+      comment.addEventListener("click", e=> e.stopPropagation());
+      comment.addEventListener("keydown", e=>{
+        e.stopPropagation();
+        if(e.key==="Enter") comment.blur();
+      });
+      comment.addEventListener("blur", ()=>{
+        setAttachmentComment(item.id, comment.value.trim(), this.el.saveFlag);
+      });
+
+      // Läs ev. sparad kommentar asynkront utan att blockera listan.
+      getAttachmentComment(item.id).then(text=>{
+        if(text && document.body.contains(comment)) comment.value = text;
+      }).catch(()=>{});
+    });
+    this._highlightActiveRow();
+  }
+  _highlightActiveRow(){
+    const current = this._currentItem();
+    this.el.attachList.querySelectorAll(".dp-attach-row").forEach(row=>{
+      row.classList.toggle("dp-active", !!current && row.dataset.id === String(current.id));
+    });
+  }
+  _selectAttachment(item){
+    // Objektet kan vara dolt av det aktiva filtret (t.ex. filter="drawing"
+    // men användaren klickar ett foto i listan) — nollställ filtret då,
+    // annars går det inte att hitta/visa det.
+    let list = this._visibleList();
+    let idx = list.indexOf(item);
+    if(idx<0){
+      this.filter = "all";
+      this.el.filterBtns.querySelectorAll("[data-filter]").forEach(b=>
+        b.classList.toggle("dp-active", b.dataset.filter==="all"));
+      list = this._visibleList();
+      idx = list.indexOf(item);
+    }
+    this.index = Math.max(0, idx);
+    this._renderView();
+    this._reselectInModel();
+  }
+  // Markerar (om)  det 3D-objekt som den klickade filen hör till — samma
+  // objekt som currentSelection, eftersom listan bara visar bilagor för det
+  // just nu valda objektet. Bekräftat mot ViewerAPI.d.ts (0.3.34): setSelection
+  // med mode "set" ersätter hela markeringen i modellen.
+  async _reselectInModel(){
+    if(!currentSelection || !tcApi?.viewer?.setSelection) return;
+    try{
+      await tcApi.viewer.setSelection(
+        { modelObjectIds: [{ modelId: currentSelection.modelId, objectRuntimeIds: [currentSelection.runtimeId] }] },
+        "set"
+      );
+    }catch(err){
+      console.warn("[TC] kunde inte återmarkera objektet i modellen:", err);
+    }
   }
 
   _buildRibbon(){
     const GROUPS = [
       { label:"Verktyg", tools:[
         {id:"select", icon:"↖", label:"Markera", title:"Markera, flytta och redigera. På en pratbubbla: dra i punkten (ringen) för att peka om, eller i fönstret för att flytta det."},
+        {id:"pan", icon:"✋", label:"Panorera", title:"Dra för att panorera i bilden/ritningen. Zooma med scrollhjulet (upp till 1000%) eller +/− ovan."},
         {id:"pen", icon:"✎", label:"Frihand"},
       ]},
       { label:"Text", tools:[
@@ -1791,6 +2022,7 @@ class DrawingPreviewWidget{
       zoomIn: document.getElementById("dp-zoom-in"),
       zoomOut: document.getElementById("dp-zoom-out"),
       zoomLevel: document.getElementById("dp-zoom-level"),
+      attachList: document.getElementById("dp-attach-list"),
     };
   }
   _bindEvents(){
@@ -1805,6 +2037,9 @@ class DrawingPreviewWidget{
     });
     this.el.zoomIn.addEventListener("click", ()=>this._zoom(0.25));
     this.el.zoomOut.addEventListener("click", ()=>this._zoom(-0.25));
+    // Scrollhjul zoomar (upp till 1000%) istället för att scrolla panelen —
+    // panorering sker med "Panorera"-verktyget (drag) eller scrollbars.
+    this.el.body.addEventListener("wheel", e=>this._onWheelZoom(e), { passive:false });
 
     // Pil vänster/höger bläddrar bara när markeringsverktyget är aktivt och
     // ingen textredigerare är öppen (samma villkor som tidigare, men utan
