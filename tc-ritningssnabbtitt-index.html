@@ -167,7 +167,7 @@
           <button class="dp-icon-btn" data-filter="image" title="Visa bara bilder">🖼</button>
         </div>
         <div id="dp-thumb-toolbar">
-          <button class="dp-icon-btn" id="dp-add-image" title="Bifoga bild">📷</button>
+          <button class="dp-icon-btn" id="dp-add-image" title="Bifoga fil (bild eller PDF-ritning) och koppla till objektet">📎</button>
           <button class="dp-icon-btn" id="dp-pen-toggle" title="Snabbanteckning (frihand)">✎</button>
           <button class="dp-icon-btn" id="dp-clear-annot" title="Rensa anteckningar">🗑</button>
         </div>
@@ -234,7 +234,7 @@
   </div>
 </div>
 
-<input type="file" id="dp-file-input" accept="image/*" style="display:none;">
+<input type="file" id="dp-file-input" accept="image/*,application/pdf,.pdf" style="display:none;">
 
 <script>
 /* =====================================================================
@@ -716,25 +716,41 @@ async function tcLoadMarkupBlob(drawingId){
 }
 
 /* ---------------------------------------------------------------------
-   Ladda upp en ny bild och länka den till objektet
-   (ersätter 📷-knappens tidigare mock).
+   Ladda upp en ny fil (bild ELLER PDF-ritning) och länka den till objektet.
+   Tidigare (tcUploadImageAttachment) accepterade filväljaren bara bilder
+   (accept="image/*" på #dp-file-input) och taggade alltid resultatet som
+   kind:"image" — det gjorde att en PDF-ritning aldrig gick att koppla via
+   den här widgeten alls, bara foton. #dp-file-input tillåter nu även PDF,
+   och vi avgör kind utifrån filens namn/typ istället för att anta bild.
    --------------------------------------------------------------------- */
-async function tcUploadImageAttachment(sel, file){
+function _classifyUploadedFile(file){
+  const isImage = IMAGE_EXT.test(file.name || "") || /^image\//.test(file.type || "");
+  return isImage ? "image" : "drawing";
+}
+async function tcUploadAttachment(sel, file){
+  const kind = _classifyUploadedFile(file);
   if(!tcAccessToken){
-    if(TC_CONFIG.MOCK_FALLBACK) return makeImage();
+    if(TC_CONFIG.MOCK_FALLBACK){
+      if(kind === "image") return makeImage();
+      const d = makeDrawing();
+      return { ...d, name: file.name || d.name }; // behåll filens riktiga namn även i testläge
+    }
     throw new Error("Ingen access token.");
   }
   if(!sel?.modelId || !sel?.guid){
-    throw new Error("Inget valt objekt att koppla bilden till.");
+    throw new Error("Inget valt objekt att koppla filen till.");
   }
   const folderId = await ensureDataFolder();
-  const filename = file.name || `foto-${Date.now()}.jpg`;
+  const filename = file.name || (kind === "image" ? `foto-${Date.now()}.jpg` : `ritning-${Date.now()}.pdf`);
   const { fileId, versionId } = await uploadFileToFolder(folderId, filename, file);
   await createObjectLink(sel.modelId, sel.guid, fileId);
 
-  return {
+  return kind === "image" ? {
     kind: "image", id: fileId, versionId, name: filename,
     capturedAt: new Date().toLocaleDateString("sv-SE"),
+  } : {
+    kind: "drawing", id: fileId, versionId, name: filename,
+    revision: "–", discipline: "–", color: "#3d9bff",
   };
 }
 
@@ -1480,28 +1496,30 @@ class DrawingPreviewWidget{
     document.getElementById("hint").classList.remove("dp-hidden");
   }
 
-  async _addRealImage(){
+  async _addAttachment(){
     if(!this.currentObj || !currentSelection) return;
     this.el.fileInput.click();
   }
   async _onFileChosen(file){
     if(!file || !this.currentObj || !currentSelection) return;
     try{
-      const img = await tcUploadImageAttachment(currentSelection, file);
+      const item = await tcUploadAttachment(currentSelection, file);
       const currentActual = this._currentItem();
       const actualIdx = this.currentObj.attachments.indexOf(currentActual);
-      this.currentObj.attachments.splice(actualIdx>=0 ? actualIdx+1 : this.currentObj.attachments.length, 0, img);
-      if(this.filter==="drawing"){
+      this.currentObj.attachments.splice(actualIdx>=0 ? actualIdx+1 : this.currentObj.attachments.length, 0, item);
+      // Visa den nyss bifogade filen även om ett filter (t.ex. bara bilder)
+      // aktivt skulle dölja den nya typen.
+      if(this.filter!=="all" && this.filter!==item.kind){
         this.filter = "all";
         this.el.thumbWrap.querySelectorAll("#dp-thumb-filter [data-filter]").forEach(b=>
           b.classList.toggle("dp-active", b.dataset.filter==="all"));
       }
       const list = this._visibleList();
-      this.index = Math.max(0, list.indexOf(img));
+      this.index = Math.max(0, list.indexOf(item));
       this._renderCurrent();
     }catch(err){
-      console.error("[TC] bilduppladdning misslyckades:", err);
-      alert("Kunde inte bifoga bilden: " + err.message);
+      console.error("[TC] filuppladdning misslyckades:", err);
+      alert("Kunde inte bifoga filen: " + err.message);
     }
   }
 
@@ -1723,7 +1741,7 @@ class DrawingPreviewWidget{
     });
     this.el.penToggle.addEventListener("click", e=>{e.stopPropagation(); this._togglePopupPen();});
     this.el.clearAnnot.addEventListener("click", e=>{e.stopPropagation(); this.popupEngine.clearAll();});
-    this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addRealImage();});
+    this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addAttachment();});
     this.el.fileInput.addEventListener("change", e=>{
       const file = e.target.files?.[0];
       this._onFileChosen(file);
