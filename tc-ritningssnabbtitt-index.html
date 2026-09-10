@@ -257,11 +257,18 @@
 const TC_CONFIG = {
   MOCK_FALLBACK: true,          // sätt till false när riktiga anrop är verifierade
   MEASURE_UNIT: "mm",           // enhet som visas efter kalibrering
+  // REST API-region (Core API 2.0). Hämtat från er faktiska konsol-logg
+  // (nätverksanrop mot app21.connect.trimble.com = PROD EU-region).
+  // VERIFIERA om ni har projekt i andra regioner — giltiga värden enligt
+  // Trimbles OpenAPI-spec: app (US), app21 (EU), app22 (UK), app31 (AP),
+  // app32 (AP2). Se https://developer.trimble.com/docs/connect/reference/openapi/core
+  API_REGION_HOST: "app21.connect.trimble.com",
 };
 
 let tcApi = null;               // WorkspaceAPI-instans (WorkspaceAPI.connect(...))
 let tcProject = null;           // från api.project.getProject()
-let tcAccessToken = null;       // REST-token, se authenticate() — VERIFIERA hela flödet
+let tcAccessToken = null;       // REST-token, se authenticate()
+let _pendingAccessTokenResolvers = []; // väntande authenticate()-anrop
 
 /* ---------------------------------------------------------------------
    Anslutning + init.
@@ -274,10 +281,20 @@ async function initExtension(){
   try{
     tcApi = await WorkspaceAPI.connect(window.parent, async (event, data) => {
       console.log("[TC event]", event, data);
-      // VERIFIERA eventnamn — logga och justera mot vad som faktiskt triggas
-      // när du markerar ett objekt i er TC-miljö.
-      if(/select/i.test(String(event))){
+      // Bekräftat via faktisk konsol-logg mot riktig TC-miljö 2026-09-10:
+      // det verkliga eventnamnet är "viewer.onSelectionChanged", där
+      // `data` är ett EventArgument-objekt {data: Selection, action, origin}
+      // och Selection = ModelObjectIds[] = [{modelId, objectRuntimeIds}, ...].
+      if(event === "viewer.onSelectionChanged"){
         await handleSelectionChanged(data);
+      }
+      // Access token levereras asynkront som ett eget event (inte som
+      // returvärdet från requestPermission) — se authenticate() nedan.
+      if(event === "extension.accessToken"){
+        const token = data?.data;
+        tcAccessToken = token || null;
+        const resolvers = _pendingAccessTokenResolvers.splice(0);
+        resolvers.forEach(r => r(token));
       }
     });
 
@@ -329,9 +346,26 @@ function setStatus(cls, text){
    här är en tom stub tills vidare.
    --------------------------------------------------------------------- */
 async function authenticate(){
-  // VERIFIERA: PKCE-flow mot id.trimble.com, eller annan mekanism ni
-  // redan använder. Kasta tills vidare så MOCK_FALLBACK tar över.
-  throw new Error("authenticate() är inte implementerad än — se kommentar ovan.");
+  // Bekräftat mot trimble-connect-workspace-api@0.3.34 (ExtensionAPI.d.ts):
+  // Extensions ska INTE implementera en egen OAuth/PKCE-flow. Trimble
+  // Connect delar istället ut en access token via extension.requestPermission,
+  // och själva token-strängen kommer asynkront som eventet
+  // "extension.accessToken" (fångas i onEvent-callbacken i initExtension()).
+  if(!tcApi?.extension?.requestPermission){
+    throw new Error("extension.requestPermission saknas i api-ytan — kontrollera SDK-version.");
+  }
+
+  const tokenPromise = new Promise((resolve, reject) => {
+    _pendingAccessTokenResolvers.push(resolve);
+    setTimeout(() => reject(new Error("Timeout: fick inget extension.accessToken-event inom 10s")), 10000);
+  });
+
+  const status = await tcApi.extension.requestPermission("accesstoken");
+  console.log("[TC] requestPermission('accesstoken') status:", status);
+
+  const token = await tokenPromise;
+  if(!token) throw new Error("Access token saknades i extension.accessToken-eventet.");
+  return token;
 }
 
 /* ---------------------------------------------------------------------
@@ -339,11 +373,12 @@ async function authenticate(){
    --------------------------------------------------------------------- */
 let currentSelection = null;
 
-async function handleSelectionChanged(data){
-  // VERIFIERA formen på "data" — antar här en lista av valda objekt med
-  // modelId + runtimeId/objectRuntimeIds, i linje med hur getObjects()/
-  // getObjectProperties() är dokumenterade.
-  const selected = data?.selection || data?.objects || data;
+async function handleSelectionChanged(eventArg){
+  // Bekräftat mot trimble-connect-workspace-api@0.3.34 (events.d.ts):
+  // "viewer.onSelectionChanged" ger ett EventArgument<Selection>, dvs.
+  // eventArg.data är själva nyttolasten — inte eventArg direkt.
+  // Selection = ModelObjectIds[] = [{modelId, objectRuntimeIds}, ...]
+  const selected = eventArg?.data;
   if(!selected || (Array.isArray(selected) && selected.length===0)){
     widget.hide();
     currentSelection = null;
@@ -352,14 +387,30 @@ async function handleSelectionChanged(data){
 
   const first = Array.isArray(selected) ? selected[0] : selected;
   const modelId = first.modelId;
-  const runtimeId = first.runtimeId ?? first.objectRuntimeIds?.[0];
+  const runtimeId = first.objectRuntimeIds?.[0];
+  if(modelId == null || runtimeId == null){
+    widget.hide();
+    currentSelection = null;
+    return;
+  }
 
   try{
     const props = await tcApi.viewer.getObjectProperties(modelId, [runtimeId]);
     const p = props?.[0];
-    const guid = p?.id || p?.externalId || p?.guid;
-    const name = p?.properties?.find?.(g=>g.name==="Name")?.value
+    const name = p?.properties?.flatMap?.(set => set.properties || [])
+                  ?.find?.(pr => /^name$/i.test(pr.name))?.value
               || p?.class || `Objekt ${runtimeId}`;
+
+    // Det numeriska ObjectProperties.id/runtimeId räcker INTE för att slå
+    // upp Object Links (som kräver den externa/IFC-GUID:en). Konvertera
+    // via viewer.convertToObjectIds — bekräftat i ViewerAPI.d.ts.
+    let guid = null;
+    try{
+      const [externalId] = await tcApi.viewer.convertToObjectIds(modelId, [runtimeId]);
+      guid = externalId || null;
+    }catch(convErr){
+      console.warn("[TC] convertToObjectIds misslyckades:", convErr);
+    }
 
     currentSelection = { modelId, runtimeId, guid, name };
     await openPopupForSelection(currentSelection);
@@ -387,53 +438,81 @@ async function openPopupForSelection(sel){
 }
 
 /* ---------------------------------------------------------------------
-   VERIFIERA — hämta bilagor (ritningar + bilder) kopplade till ett objekt.
+   Hämta bilagor (ritningar + bilder) kopplade till ett objekt.
 
-   I TC:s UI heter funktionen "Object Attachments" (Bilagor-panelen);
-   i Core REST-API:ts dokumentation hittar man samma koncept under termen
-   "Object Links" — filer/ToDos/URL:er länkade till en 3D-entitet. Jag
-   har INTE kunnat verifiera den exakta endpointen/verbet för detta, så
-   nedan är en rimlig men OBEKRÄFTAD gissning på anropsform. Snabbaste
-   sättet att verifiera: öppna TC:s webb-UI, klicka ett objekt, öppna
-   Bilagor-panelen, och läs av Network-fliken i devtools för att se den
-   faktiska URL:en + auth-header som används (ni sa att ni gör detta
-   själva och skickar mig fynden — byt ut funktionen nedan när ni gör det).
+   Bekräftat mot Trimbles officiella OpenAPI-spec för Core API 2.0
+   (https://developer.trimble.com/docs/connect/reference/openapi/core,
+   SwaggerHub: Trimble-Connect/tcps/2.0):
+   - Konceptet heter "Object Links": GET /objectlink?versionId=&sourceId=
+     ("List linked entities for objects"). `versionId` = modelId (samma
+     värde som File.versionId för modeller lagrade som filer), `sourceId`
+     = objektets externa/IFC-GUID (se convertToObjectIds i handleSelectionChanged).
+   - Varje länk har `target.type` (FILE/URL/TOPIC/TODO/ISSUE) och
+     `target.id` (fileId när type=FILE).
+   - Filmetadata hämtas separat via GET /files/{fileId}.
    --------------------------------------------------------------------- */
+function tcApiUrl(path){
+  return `https://${TC_CONFIG.API_REGION_HOST}/tc/api/2.0${path}`;
+}
+
+async function tcFetchJson(path){
+  const res = await fetch(tcApiUrl(path), { headers: { Authorization: `Bearer ${tcAccessToken}` } });
+  if(!res.ok) throw new Error(`TC API-anrop misslyckades (${res.status}): ${path}`);
+  return await res.json();
+}
+
+const IMAGE_EXT = /\.(jpe?g|png|heic|heif|gif|bmp|webp)$/i;
+
 async function getAttachmentsForObject(sel){
   if(!tcAccessToken){
     if(TC_CONFIG.MOCK_FALLBACK) return makeAttachments(2, 1);
-    throw new Error("Ingen access token — authenticate() måste implementeras först.");
+    throw new Error("Ingen access token — authenticate() måste lyckas först.");
+  }
+  if(!sel.guid){
+    console.warn("[TC] Inget externt objekt-id (GUID) kunde slås upp — kan inte hämta Object Links.");
+    return [];
   }
 
-  const region = tcProject?.region || "app"; // VERIFIERA regionval (t.ex. "app"/"app-eu"/"app-us")
-  const url = `https://${region}.connect.trimble.com/tc/api/2.0/projects/${tcProject.id}/objects/${sel.guid}/links`; // VERIFIERA endpoint
+  const qs = new URLSearchParams({ versionId: sel.modelId, sourceId: sel.guid, detail: "true" });
+  const links = await tcFetchJson(`/objectlink?${qs.toString()}`);
+  const fileLinks = (Array.isArray(links) ? links : links?.items || [])
+    .filter(l => l.target?.type === "FILE" && l.target?.id);
 
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${tcAccessToken}` } });
-  if(!res.ok) throw new Error(`Object Links-anrop misslyckades (${res.status})`);
-  const links = await res.json();
+  // Hämta filmetadata (namn, versionId) för varje länkad fil.
+  const files = await Promise.all(fileLinks.map(async l => {
+    try{
+      return await tcFetchJson(`/files/${l.target.id}`);
+    }catch(err){
+      console.warn("[TC] kunde inte hämta filmetadata för", l.target.id, err);
+      return null;
+    }
+  }));
 
-  // VERIFIERA fältnamn i svaret — mappar om till widgetens interna format.
-  return (links || []).map(l => l.fileType === "IMAGE" ? {
-    kind: "image", id: l.fileId, name: l.name, capturedAt: l.createdOn,
+  return files.filter(Boolean).map(f => IMAGE_EXT.test(f.name || "") ? {
+    kind: "image", id: f.id, versionId: f.versionId, name: f.name, capturedAt: f.createdOn,
   } : {
-    kind: "drawing", id: l.fileId, name: l.name, revision: l.revision || "–",
-    discipline: l.discipline || "–", color: "#3d9bff",
+    kind: "drawing", id: f.id, versionId: f.versionId, name: f.name,
+    revision: "–", discipline: "–", color: "#3d9bff",
   });
 }
 
 /* ---------------------------------------------------------------------
-   VERIFIERA — ladda ner filinnehåll (PDF/bild) för en bilaga.
-   Återanvänd gärna exakt samma nedladdningslogik som er PDF-overlay-
-   extension redan har (den löste redan detta), istället för nedan.
+   Ladda ner filinnehåll (PDF/bild) för en bilaga.
+   Bekräftat: GET /files/fs/{fileId}/downloadurl?versionId=&format=
+   returnerar en tillfällig signerad URL (DownloadURLResponse.url), som
+   sedan hämtas med en vanlig fetch (ingen Authorization-header behövs
+   på den andra begäran — url:en är redan signerad).
    --------------------------------------------------------------------- */
-async function downloadAttachmentBlob(fileId){
+async function downloadAttachmentBlob(fileId, versionId, format){
   if(!tcAccessToken){
     if(TC_CONFIG.MOCK_FALLBACK) return null; // hanteras av mock-renderarna
     throw new Error("Ingen access token.");
   }
-  const region = tcProject?.region || "app"; // VERIFIERA
-  const url = `https://${region}.connect.trimble.com/tc/api/2.0/files/${fileId}/data`; // VERIFIERA endpoint
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${tcAccessToken}` } });
+  const qs = new URLSearchParams();
+  if(versionId) qs.set("versionId", versionId);
+  if(format) qs.set("format", format);
+  const { url } = await tcFetchJson(`/files/fs/${fileId}/downloadurl?${qs.toString()}`);
+  const res = await fetch(url);
   if(!res.ok) throw new Error(`Filnedladdning misslyckades (${res.status})`);
   return await res.blob();
 }
@@ -769,7 +848,7 @@ function renderPlaceholder(canvas, item, message){
 
 async function renderRealDrawing(canvas, drawing){
   try{
-    const blob = await downloadAttachmentBlob(drawing.id);
+    const blob = await downloadAttachmentBlob(drawing.id, drawing.versionId);
     if(!blob || !window.pdfjsLib) throw new Error("Ingen fildata / pdf.js saknas");
     const buf = await blob.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
@@ -788,7 +867,7 @@ async function renderRealDrawing(canvas, drawing){
 
 async function renderRealImage(canvas, imgItem){
   try{
-    const blob = await downloadAttachmentBlob(imgItem.id);
+    const blob = await downloadAttachmentBlob(imgItem.id, imgItem.versionId);
     if(!blob) throw new Error("Ingen fildata");
     const bitmap = await createImageBitmap(blob);
     const ctx = canvas.getContext("2d");
