@@ -7,13 +7,19 @@
 
 <!-- ============================================================
      EXTERNA BIBLIOTEK
-     - trimble-connect-workspace-api: byt src nedan mot exakt samma
-       CDN-URL/version du redan använder i dina andra extensions
-       (PDF-overlay, Rita & extrudera, ...). Jag har INTE kunnat
-       verifiera exakt URL/version här, så det här är en platshållare.
+     - trimble-connect-workspace-api: den tidigare versionen (1.0.1)
+       fanns inte på npm ("Package version not found"), vilket gjorde
+       att skriptet aldrig laddades och extensionen alltid föll
+       tillbaka till fristående testläge även inne i riktiga TC.
+       Rättat till senaste publicerade version (0.3.34) och rätt
+       IIFE-byggfil för <script src>-bruk. OBS: den filen exponerar
+       ett globalt objekt som heter "TrimbleConnectWorkspace", inte
+       "WorkspaceAPI" — se kompatibilitetsraden direkt nedanför
+       (behåller resten av koden oförändrad).
      - pdf.js: används för riktig PDF-rendering (ersätter renderMockDrawing).
      ============================================================ -->
-<script src="https://unpkg.com/trimble-connect-workspace-api@1.0.1/dist/trimble-connect-workspace-api.js"></script>
+<script src="https://unpkg.com/trimble-connect-workspace-api@0.3.34/dist/iife/trimbleconnect.workspace.api.js"></script>
+<script>if(window.TrimbleConnectWorkspace && !window.WorkspaceAPI){ window.WorkspaceAPI = window.TrimbleConnectWorkspace; }</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <style>
