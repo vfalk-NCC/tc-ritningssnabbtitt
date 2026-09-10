@@ -33,9 +33,8 @@
     font-family:"Segoe UI",system-ui,Arial,sans-serif;overflow:hidden;}
 
   /* Extensionen kör i en egen iframe - vi äger inte 3D-vyn (den ritas av
-     TC:s värdsida). Layouten är därför "panel med flytande popup inuti
-     panelens egen yta", inte "popup ovanpå hela viewporten" som i mockupen.
-     Se kommentar i JS-initet längst ned om detta antagande. */
+     TC:s värdsida). Layouten är därför "panel med innehåll inuti panelens
+     egen yta" (helskärm = fyller sidopanelen, inte hela webbläsarfönstret). */
   #app{ position:relative; width:100vw; height:100vh; background:var(--bg); overflow:hidden; }
 
   #ext-toolbar{ position:absolute; top:0; left:0; right:0; height:34px; background:var(--panel);
@@ -52,35 +51,35 @@
     background:rgba(0,0,0,.35); padding:6px 10px; border-radius:5px; max-width:80%; }
   #hint.dp-hidden{display:none;}
 
-  /* ---------- Popup (snabbtitt) ---------- */
-  #dp-popup{
-    position:absolute; width:280px; height:400px;
-    min-width:220px; min-height:260px; max-width:640px; max-height:85vh;
-    background:var(--panel); border:1px solid var(--border); border-radius:8px;
-    box-shadow:0 10px 30px rgba(0,0,0,.5);
-    display:none; flex-direction:column; z-index:50;
-    resize:both; overflow:hidden;
-    animation:pop-in .12s ease;
-    top:44px; right:12px;
-  }
-  @keyframes pop-in{ from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;} }
-  #dp-popup.dp-visible{display:flex;}
-  #dp-header{ display:flex; align-items:center; justify-content:space-between; flex:0 0 auto;
-    padding:8px 10px; border-bottom:1px solid var(--border); font-size:12px; cursor:move; }
-  #dp-title{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;}
-  #dp-meta{font-size:11px; color:var(--text-dim); padding:2px 10px 8px; flex:0 0 auto;}
-  #dp-thumb-wrap{ position:relative; flex:1 1 auto; margin:0 10px 8px; border-radius:5px;
-    background:#101113; overflow:hidden; min-height:60px; }
-  #dp-thumb-base, #dp-thumb-annot{ position:absolute; inset:0; width:100%; height:100%; }
-  #dp-thumb-annot.dp-annot-active{ cursor:crosshair; }
-  #dp-thumb-toolbar{ position:absolute; top:6px; right:6px; display:flex; gap:4px; z-index:2; }
-  #dp-thumb-filter{ position:absolute; top:6px; left:6px; display:flex; gap:3px; z-index:2; }
-  #dp-thumb-filter .dp-icon-btn{ width:auto; padding:0 6px; font-size:10px; }
   .dp-icon-btn{ width:24px; height:24px; border-radius:4px; border:1px solid var(--border);
     background:rgba(30,31,34,.85); color:var(--text-dim); font-size:12px; cursor:pointer;
-    display:flex; align-items:center; justify-content:center; padding:0; }
+    display:flex; align-items:center; justify-content:center; padding:0; flex:0 0 auto; }
   .dp-icon-btn:hover{ color:var(--text); background:#333; }
   .dp-icon-btn.dp-active{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  #dp-thumb-filter{ display:flex; gap:3px; }
+  #dp-thumb-filter .dp-icon-btn{ width:auto; padding:0 6px; font-size:10px; }
+
+  .dp-btn{ background:none; border:1px solid var(--border); color:var(--text); border-radius:4px;
+    padding:4px 7px; font-size:11px; cursor:pointer; line-height:1; white-space:nowrap; }
+  .dp-btn:hover{background:#333;}
+  .dp-btn:disabled{opacity:.3; cursor:default;}
+  .dp-btn:disabled:hover{background:none;}
+
+  /* ---------- Ritnings-/bildvyn — fyller hela sidopanelen (panel-body) ---------- */
+  #dp-view{ position:absolute; inset:0; display:none; flex-direction:column; background:var(--bg); }
+  #dp-view.dp-visible{ display:flex; }
+  #dp-view-header{ display:flex; align-items:center; gap:8px; padding:8px 12px;
+    font-size:12px; background:var(--panel); border-bottom:1px solid var(--border); flex-wrap:wrap; flex:0 0 auto; }
+  #dp-modal-title{ font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    flex:1 1 auto; min-width:80px; }
+  #dp-modal-save-flag{ font-size:10px; color:var(--ok); opacity:0; transition:opacity .3s ease; flex:0 0 auto; }
+  #dp-modal-save-flag.dp-show{ opacity:1; }
+
+  #dp-modal-nav{ display:flex; align-items:center; gap:8px; padding:6px 12px; flex:0 0 auto;
+    border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  #dp-counter2{font-size:11px; color:var(--text-dim);}
+  #dp-modal-zoom{display:flex; gap:4px; align-items:center; margin-left:auto; color:var(--text-dim); font-size:12px;}
+
   #dp-empty{ color:var(--text-dim); font-size:12px; text-align:center; padding:0 14px;
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
   #dp-loading{ color:var(--text-dim); font-size:12px; text-align:center; padding:0 14px;
@@ -89,27 +88,6 @@
   #dp-error{ color:var(--err); font-size:11px; text-align:center; padding:0 14px;
     position:absolute; inset:0; display:none; align-items:center; justify-content:center; }
   #dp-error.dp-show{display:flex;}
-  #dp-nav{ display:flex; align-items:center; justify-content:space-between; padding:6px 8px 8px; gap:4px; flex:0 0 auto; }
-  .dp-btn{ background:none; border:1px solid var(--border); color:var(--text); border-radius:4px;
-    padding:4px 7px; font-size:11px; cursor:pointer; line-height:1; white-space:nowrap; }
-  .dp-btn:hover{background:#333;}
-  .dp-btn:disabled{opacity:.3; cursor:default;}
-  .dp-btn:disabled:hover{background:none;}
-  #dp-counter{font-size:11px; color:var(--text-dim); flex:1; text-align:center;}
-  #dp-close{background:none; border:none; color:var(--text-dim); font-size:15px; cursor:pointer; padding:0 2px;}
-  #dp-close:hover{color:var(--text);}
-  #dp-save-flag{ font-size:10px; color:var(--ok); opacity:0; transition:opacity .3s ease; position:absolute; bottom:6px; left:6px; z-index:2; }
-  #dp-save-flag.dp-show{ opacity:1; }
-
-  /* ---------- Fullskärm expand ---------- */
-  #dp-modal{ position:fixed; inset:0; background:rgba(10,10,11,.92); z-index:100; display:none; flex-direction:column; backdrop-filter:blur(2px); }
-  #dp-modal.dp-visible{display:flex;}
-  #dp-modal-header{ display:flex; align-items:center; justify-content:space-between; padding:8px 18px;
-    font-size:13px; background:var(--panel); border-bottom:1px solid var(--border); flex-wrap:wrap; gap:8px; }
-  #dp-modal-nav{display:flex; gap:8px; align-items:center;}
-  #dp-modal-zoom{display:flex; gap:4px; align-items:center; margin-right:8px; color:var(--text-dim); font-size:12px;}
-  #dp-modal-save-flag{ font-size:11px; color:var(--ok); opacity:0; transition:opacity .3s ease; margin-right:8px; }
-  #dp-modal-save-flag.dp-show{ opacity:1; }
 
   /* Ribbon */
   #dp-ribbon{ display:flex; align-items:flex-end; gap:10px; padding:8px 18px; background:var(--panel-2);
@@ -132,7 +110,7 @@
   .dp-widthdot.dp-active{ border-color:var(--accent); background:rgba(61,155,255,.15); }
   #dp-ribbon-note{ font-size:10px; color:var(--text-dim); margin-left:auto; align-self:center; max-width:260px; text-align:right; }
 
-  #dp-modal-body{ flex:1; overflow:auto; display:flex; align-items:center; justify-content:center; padding:24px; }
+  #dp-modal-body{ position:relative; flex:1; overflow:auto; display:flex; align-items:center; justify-content:center; padding:24px; }
   #dp-modal-canvas-wrap{ position:relative; display:inline-block; box-shadow:0 0 30px rgba(0,0,0,.6); }
   #dp-modal-canvas, #dp-modal-annot{ display:block; }
   #dp-modal-annot{ position:absolute; top:0; left:0; cursor:crosshair; }
@@ -167,85 +145,66 @@
   <div id="panel-body">
     <div id="hint">Markera ett objekt i 3D-vyn för att se kopplade ritningar och bilder</div>
 
-    <div id="dp-popup">
-      <div id="dp-header">
-        <span id="dp-title">–</span>
-        <button id="dp-close" title="Stäng">✕</button>
-      </div>
-      <div id="dp-meta"></div>
-      <div id="dp-thumb-wrap">
-        <canvas id="dp-thumb-base"></canvas>
-        <canvas id="dp-thumb-annot"></canvas>
+    <!-- Tidigare: liten flytande/dragbar popup + separat "Förstora"-knapp som
+         öppnade ett fullskärmsläge (position:fixed; inset:0) OVANPÅ panelen.
+         Nu: samma ritnings-/ribbonvy visas direkt i sidopanelens egna yta
+         (panel-body), permanent, utan mellansteg. -->
+    <div id="dp-view">
+      <div id="dp-view-header">
+        <span id="dp-modal-title">–</span>
         <div id="dp-thumb-filter">
           <button class="dp-icon-btn dp-active" data-filter="all" title="Visa alla">Alla</button>
           <button class="dp-icon-btn" data-filter="drawing" title="Visa bara ritningar">📄</button>
           <button class="dp-icon-btn" data-filter="image" title="Visa bara bilder">🖼</button>
         </div>
-        <div id="dp-thumb-toolbar">
-          <button class="dp-icon-btn" id="dp-link-existing" title="Länka en fil som redan finns i Trimble Connect (ingen uppladdning)">🔗</button>
-          <button class="dp-icon-btn" id="dp-add-image" title="Bifoga fil (bild eller PDF-ritning) och koppla till objektet">📎</button>
-          <button class="dp-icon-btn" id="dp-pen-toggle" title="Snabbanteckning (frihand)">✎</button>
-          <button class="dp-icon-btn" id="dp-clear-annot" title="Rensa anteckningar">🗑</button>
+        <button class="dp-icon-btn" id="dp-link-existing" title="Länka en fil som redan finns i Trimble Connect (ingen uppladdning)">🔗</button>
+        <button class="dp-icon-btn" id="dp-add-image" title="Bifoga fil (bild eller PDF-ritning) och koppla till objektet">📎</button>
+        <span id="dp-modal-save-flag">Sparat ✓</span>
+      </div>
+
+      <div id="dp-modal-nav">
+        <button class="dp-btn" id="dp-modal-prev">‹ Föreg.</button>
+        <span id="dp-counter2">0 / 0</span>
+        <div id="dp-modal-zoom">
+          <button class="dp-btn" id="dp-zoom-out">–</button>
+          <span id="dp-zoom-level">100%</span>
+          <button class="dp-btn" id="dp-zoom-in">+</button>
         </div>
-        <span id="dp-save-flag">Sparat ✓</span>
+        <button class="dp-btn" id="dp-modal-next">Nästa ›</button>
+      </div>
+
+      <div id="dp-ribbon">
+        <div id="dp-ribbon-groups" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;"></div>
+        <div class="dp-rgroup">
+          <div class="dp-rgroup-btns" id="dp-color-swatches"></div>
+          <span class="dp-rgroup-label">Färg</span>
+        </div>
+        <div class="dp-rgroup">
+          <div class="dp-rgroup-btns" id="dp-width-btns"></div>
+          <span class="dp-rgroup-label">Tjocklek</span>
+        </div>
+        <div class="dp-rgroup">
+          <div class="dp-rgroup-btns">
+            <button class="dp-btn" id="dp-undo">↺ Ångra</button>
+            <button class="dp-btn" id="dp-clear-all">🗑 Rensa</button>
+          </div>
+          <span class="dp-rgroup-label">Åtgärd</span>
+        </div>
+        <div id="dp-ribbon-note">
+          * Mått visas i verklig skala om ritningen kalibrerats (verktyget "Kalibrera"), annars i px.
+          Dubbelklicka/Enter avslutar omkrets &amp; area.
+        </div>
+      </div>
+
+      <div id="dp-modal-body">
+        <div id="dp-modal-canvas-wrap">
+          <canvas id="dp-modal-canvas"></canvas>
+          <canvas id="dp-modal-annot"></canvas>
+        </div>
         <div id="dp-empty" style="display:none;">Inga ritningar eller bilder kopplade till objektet</div>
         <div id="dp-loading">Hämtar bilagor…</div>
         <div id="dp-error"></div>
       </div>
-      <div id="dp-nav">
-        <button class="dp-btn" id="dp-prev">‹ Föreg.</button>
-        <span id="dp-counter">0 / 0</span>
-        <button class="dp-btn" id="dp-expand-btn">⤢ Förstora</button>
-        <button class="dp-btn" id="dp-next">Nästa ›</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div id="dp-modal">
-  <div id="dp-modal-header">
-    <span id="dp-modal-title">–</span>
-    <div id="dp-modal-nav">
-      <span id="dp-modal-save-flag">Sparat ✓</span>
-      <div id="dp-modal-zoom">
-        <button class="dp-btn" id="dp-zoom-out">–</button>
-        <span id="dp-zoom-level">100%</span>
-        <button class="dp-btn" id="dp-zoom-in">+</button>
-      </div>
-      <button class="dp-btn" id="dp-modal-prev">‹ Föreg.</button>
-      <span id="dp-counter2">0 / 0</span>
-      <button class="dp-btn" id="dp-modal-next">Nästa ›</button>
-      <button class="dp-btn" id="dp-modal-close">Stäng ✕</button>
-    </div>
-  </div>
-
-  <div id="dp-ribbon">
-    <div id="dp-ribbon-groups" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;"></div>
-    <div class="dp-rgroup">
-      <div class="dp-rgroup-btns" id="dp-color-swatches"></div>
-      <span class="dp-rgroup-label">Färg</span>
-    </div>
-    <div class="dp-rgroup">
-      <div class="dp-rgroup-btns" id="dp-width-btns"></div>
-      <span class="dp-rgroup-label">Tjocklek</span>
-    </div>
-    <div class="dp-rgroup">
-      <div class="dp-rgroup-btns">
-        <button class="dp-btn" id="dp-undo">↺ Ångra</button>
-        <button class="dp-btn" id="dp-clear-all">🗑 Rensa</button>
-      </div>
-      <span class="dp-rgroup-label">Åtgärd</span>
-    </div>
-    <div id="dp-ribbon-note">
-      * Mått visas i verklig skala om ritningen kalibrerats (verktyget "Kalibrera"), annars i px.
-      Dubbelklicka/Enter avslutar omkrets &amp; area.
-    </div>
-  </div>
-
-  <div id="dp-modal-body">
-    <div id="dp-modal-canvas-wrap">
-      <canvas id="dp-modal-canvas"></canvas>
-      <canvas id="dp-modal-annot"></canvas>
     </div>
   </div>
 </div>
@@ -469,17 +428,10 @@ async function handleSelectionChanged(eventArg){
 }
 
 async function openPopupForSelection(sel){
-  // VERIFIERA: skärmposition för klicket finns troligen INTE tillgänglig
-  // i extension-iframen (den ligger i värdsidans DOM, inte vår). Popupen
-  // öppnas därför på en fast plats (övre högra hörnet, se CSS #dp-popup)
-  // istället för "nära objektet" som i mockupen. Går att dra dit man vill.
-  const anchorX = window.innerWidth - 300;
-  const anchorY = 44;
-
   widget.showLoading();
   try{
     const attachments = await getAttachmentsForObject(sel);
-    widget.showForObject({ name: sel.name, guid: sel.guid, attachments }, anchorX, anchorY);
+    widget.showForObject({ name: sel.name, guid: sel.guid, attachments });
   }catch(err){
     console.error("[TC] kunde inte hämta bilagor:", err);
     widget.showError("Kunde inte hämta bilagor: " + err.message);
@@ -927,7 +879,7 @@ function initMockStandalone(){
   document.getElementById("ext-project-name").textContent = "(fristående testläge, ingen TC-anslutning)";
   const demoObj = { name: "Demo-objekt", guid: "GUID-DEMO", attachments: makeAttachments(3,2) };
   document.getElementById("hint").textContent = "Testläge: ingen TC-anslutning. Visar exempeldata.";
-  widget.showForObject(demoObj, window.innerWidth-300, 44);
+  widget.showForObject(demoObj);
 }
 
 /* =====================================================================
@@ -1539,38 +1491,38 @@ class AnnotationEngine{
 
 /* =====================================================================
    DEL 6 — DrawingPreviewWidget
-   (samma UI-logik som mockupen: popup, filter, navigering, drag/resize,
-   fullskärm + ribbon. Ändringar: showForObject tar redan uppslagen data
-   istället för att slumpa fram den, _addMockImage → riktig uppladdning,
-   nya loading/error-lägen, ribbon har fått ett "Kalibrera"-verktyg.)
+
+   Visar vald ritning/bild med ribbon (rit-/mätverktyg) DIREKT i sidopanelens
+   egen yta (panel-body) — permanent, ingen liten flytande popup och inget
+   separat "Förstora"-klick längre (det fanns tidigare, som simulerade ett
+   fullskärms-overlay ovanpå hela webbläsarfönstret; borttaget på uttrycklig
+   begäran eftersom extensionens iframe redan ÄR sidopanelen, se CSS-kommentar
+   för #app). showForObject tar redan uppslagen data istället för att slumpa
+   fram den, filuppladdning/länkning är riktiga TC-anrop, och ribbon har fått
+   ett "Kalibrera"-verktyg utöver mockupens ursprungliga.
    ===================================================================== */
 class DrawingPreviewWidget{
   constructor(){
     this.attachments = [];
     this.filter = "all";
     this.index = 0;
-    this.modalList = [];
-    this.modalIndex = 0;
-    this.modalZoom = 1;
+    this.zoom = 1;
     this.currentObj = null;
     this._cacheDom();
     this._bindEvents();
-    this._makeDraggable();
     this._observeResize();
 
     this.filePicker = new ExistingFilePicker(file => this._linkExistingFile(file));
 
-    this.popupEngine = new AnnotationEngine(this.el.thumbAnnot, {
+    // Tidigare fanns två separata AnnotationEngine-instanser (en för den lilla
+    // popup-thumbnailen, en för fullskärmsläget). Nu finns bara EN vy, så en
+    // enda motor räcker — bunden till huvudcanvasen, alltid med markerings-
+    // /redigeringsläge påslaget (allowSelect) eftersom ribbonen alltid syns.
+    this.engine = new AnnotationEngine(this.el.annot, {
       getDrawingId: ()=>this._currentItem()?.id,
-      saveFlagEl: this.el.thumbSaveFlag,
-      allowSelect: false,
-      wrapEl: null,
-    });
-    this.modalEngine = new AnnotationEngine(this.el.modalAnnot, {
-      getDrawingId: ()=>this.modalList[this.modalIndex]?.id,
-      saveFlagEl: this.el.modalSaveFlag,
+      saveFlagEl: this.el.saveFlag,
       allowSelect: true,
-      wrapEl: this.el.modalCanvasWrap,
+      wrapEl: this.el.canvasWrap,
     });
 
     this._buildRibbon();
@@ -1583,7 +1535,7 @@ class DrawingPreviewWidget{
   _currentItem(){ return this._visibleList()[this.index]; }
 
   _bindFilterButtons(){
-    const btns = this.el.thumbWrap.querySelectorAll("#dp-thumb-filter [data-filter]");
+    const btns = this.el.filterBtns.querySelectorAll("[data-filter]");
     btns.forEach(b=>{
       b.addEventListener("click", e=>{
         e.stopPropagation();
@@ -1599,11 +1551,11 @@ class DrawingPreviewWidget{
     const list = this._visibleList();
     const idx = prevItem ? list.indexOf(prevItem) : -1;
     this.index = idx>=0 ? idx : 0;
-    this._renderCurrent();
+    this._renderView();
   }
 
   showLoading(){
-    this.el.popup.classList.add("dp-visible");
+    this.el.view.classList.add("dp-visible");
     this.el.loading.classList.add("dp-show");
     this.el.error.classList.remove("dp-show");
     this.el.empty.style.display = "none";
@@ -1614,25 +1566,26 @@ class DrawingPreviewWidget{
     this.el.error.textContent = message;
   }
 
-  showForObject(obj, anchorX, anchorY){
+  // Visar vyn direkt i sidopanelen (panel-body) — ingen popup, inget
+  // separat "Förstora"-steg. anchorX/anchorY tas inte längre emot av
+  // anropen (de behövdes bara för att positionera den gamla flytande
+  // popupen) men ignoreras tyst om de ändå skickas in.
+  showForObject(obj){
     this.currentObj = obj;
     this.attachments = obj.attachments;
     this.index = 0;
-    this.popupEngine.setTool("none");
-    this.el.penToggle.classList.remove("dp-active");
+    this.zoom = 1;
+    this.engine.setTool("none");
     this.el.loading.classList.remove("dp-show");
     this.el.error.classList.remove("dp-show");
 
     document.getElementById("hint").classList.add("dp-hidden");
-
-    const popup = this.el.popup;
-    popup.style.left = Math.min(anchorX, window.innerWidth - 300) + "px";
-    popup.style.top = Math.min(anchorY, window.innerHeight - 400) + "px";
-    popup.classList.add("dp-visible");
-    this._renderCurrent();
+    this.el.view.classList.add("dp-visible");
+    this._setTool("select");
+    this._renderView();
   }
   hide(){
-    this.el.popup.classList.remove("dp-visible");
+    this.el.view.classList.remove("dp-visible");
     this.currentObj = null;
     document.getElementById("hint").classList.remove("dp-hidden");
   }
@@ -1674,97 +1627,61 @@ class DrawingPreviewWidget{
     this.currentObj.attachments.splice(actualIdx>=0 ? actualIdx+1 : this.currentObj.attachments.length, 0, item);
     if(this.filter!=="all" && this.filter!==item.kind){
       this.filter = "all";
-      this.el.thumbWrap.querySelectorAll("#dp-thumb-filter [data-filter]").forEach(b=>
+      this.el.filterBtns.querySelectorAll("[data-filter]").forEach(b=>
         b.classList.toggle("dp-active", b.dataset.filter==="all"));
     }
     const list = this._visibleList();
     this.index = Math.max(0, list.indexOf(item));
-    this._renderCurrent();
+    this._renderView();
   }
 
-  async _renderCurrent(){
+  // Ersätter de gamla _renderCurrent (popup-thumbnail) + _renderModal
+  // (fullskärm) — nu finns bara en vy att rita upp.
+  async _renderView(){
     const list = this._visibleList();
     const total = list.length;
     this.el.counter.textContent = total ? `${this.index+1} / ${total}` : "0 / 0";
     this.el.prev.disabled = this.index<=0;
     this.el.next.disabled = this.index>=total-1;
+    this.el.zoomLevel.textContent = `${Math.round(this.zoom*100)}%`;
 
     if(!total){
-      this.el.title.textContent = "–"; this.el.meta.textContent = "";
+      this.el.title.textContent = "–";
       this.el.empty.style.display = "flex";
-      this._resizeThumbCanvases();
-      this.popupEngine.items = [];
-      this.popupEngine.render();
+      this.engine.items = [];
+      this.engine.render();
       return;
     }
     this.el.empty.style.display = "none";
     const d = list[this.index];
-    this.el.title.textContent = `${kindIcon(d.kind)} ${d.name}`;
-    this.el.meta.textContent = kindMeta(d);
-    this._resizeThumbCanvases();
-    await renderAttachment(this.el.thumbBase, d);
-    await this.popupEngine.loadForDrawing();
+    this.el.title.textContent = `${kindIcon(d.kind)} ${d.name} · ${kindMeta(d)}`;
+    this._resizeCanvases();
+    await renderAttachment(this.el.canvas, d);
+    await this.engine.loadForDrawing();
   }
-  _resizeThumbCanvases(){
-    const rect = this.el.thumbWrap.getBoundingClientRect();
-    [this.el.thumbBase, this.el.thumbAnnot].forEach(c=>{
-      c.width = Math.max(1, Math.round(rect.width));
-      c.height = Math.max(1, Math.round(rect.height));
-    });
+  // Canvasen fyller tillgänglig plats i panelen (istället för den gamla
+  // fasta 720×480-storleken som antog ett fullskärms-overlay över hela
+  // webbläsarfönstret) — zoom skalar upp/ner från den storleken.
+  _resizeCanvases(){
+    const rect = this.el.body.getBoundingClientRect();
+    const baseW = Math.max(100, rect.width - 48);
+    const baseH = Math.max(100, rect.height - 48);
+    const w = Math.round(baseW*this.zoom), h = Math.round(baseH*this.zoom);
+    [this.el.canvas, this.el.annot].forEach(c=>{ c.width=w; c.height=h; });
   }
   _observeResize(){
     const ro = new ResizeObserver(()=>{
-      const item = this._currentItem();
-      if(!item) return;
-      this._resizeThumbCanvases();
-      renderAttachment(this.el.thumbBase, item);
-      this.popupEngine.render();
+      if(!this.currentObj) return;
+      this._renderView();
     });
-    ro.observe(this.el.thumbWrap);
+    ro.observe(this.el.body);
   }
-  _goPrev(){ if(this.index>0){ this.index--; this._renderCurrent(); } }
-  _goNext(){ if(this.index<this._visibleList().length-1){ this.index++; this._renderCurrent(); } }
+  _goPrev(){ if(this.index>0){ this.index--; this._renderView(); } }
+  _goNext(){ if(this.index<this._visibleList().length-1){ this.index++; this._renderView(); } }
+  _zoom(delta){ this.zoom = Math.min(3, Math.max(0.4, this.zoom+delta)); this._renderView(); }
 
-  _togglePopupPen(){
-    const next = this.popupEngine.tool==="pen" ? "none" : "pen";
-    this.popupEngine.setTool(next);
-    this.el.thumbAnnot.classList.toggle("dp-annot-active", next==="pen");
-    this.el.penToggle.classList.toggle("dp-active", next==="pen");
-  }
-
-  async _openExpanded(){
-    const list = this._visibleList();
-    if(!list.length || this.popupEngine.tool==="pen") return;
-    this.modalList = list;
-    this.modalIndex = this.index;
-    this.modalZoom = 1;
-    this.el.modal.classList.add("dp-visible");
-    this._setModalTool("select");
-    await this._renderModal();
-  }
-  _closeExpanded(){ this.el.modal.classList.remove("dp-visible"); }
-
-  async _renderModal(){
-    const d = this.modalList[this.modalIndex];
-    const total = this.modalList.length;
-    this.el.modalTitle.textContent = `${kindIcon(d.kind)} ${d.name} · ${kindMeta(d)}`;
-    this.el.modalCounter.textContent = `${this.modalIndex+1} / ${total}`;
-    this.el.modalPrev.disabled = this.modalIndex<=0;
-    this.el.modalNext.disabled = this.modalIndex>=total-1;
-    this.el.zoomLevel.textContent = `${Math.round(this.modalZoom*100)}%`;
-
-    const baseW=720, baseH=480;
-    const w=Math.round(baseW*this.modalZoom), h=Math.round(baseH*this.modalZoom);
-    [this.el.modalCanvas, this.el.modalAnnot].forEach(c=>{ c.width=w; c.height=h; });
-    await renderAttachment(this.el.modalCanvas, d);
-    await this.modalEngine.loadForDrawing();
-  }
-  _modalPrev(){ if(this.modalIndex>0){ this.modalIndex--; this._renderModal(); this.index=this.modalIndex; } }
-  _modalNext(){ if(this.modalIndex<this.modalList.length-1){ this.modalIndex++; this._renderModal(); this.index=this.modalIndex; } }
-  _zoom(delta){ this.modalZoom = Math.min(3, Math.max(0.4, this.modalZoom+delta)); this._renderModal(); }
-
-  _setModalTool(id){
-    this.modalEngine.setTool(id);
+  _setTool(id){
+    this.engine.setTool(id);
     this._ribbonButtons.forEach(b=> b.classList.toggle("dp-active", b.dataset.tool===id));
   }
 
@@ -1805,7 +1722,7 @@ class DrawingPreviewWidget{
         btn.dataset.tool = t.id;
         btn.title = t.title || t.label;
         btn.innerHTML = `<span class="ic">${t.icon}</span><span>${t.label}</span>`;
-        btn.addEventListener("click", ()=> this._setModalTool(t.id));
+        btn.addEventListener("click", ()=> this._setTool(t.id));
         row.appendChild(btn);
         this._ribbonButtons.push(btn);
       });
@@ -1823,7 +1740,7 @@ class DrawingPreviewWidget{
       b.className = "dp-swatch" + (i===0 ? " dp-active" : "");
       b.style.background = c;
       b.addEventListener("click", ()=>{
-        this.modalEngine.setColor(c);
+        this.engine.setColor(c);
         swatchWrap.querySelectorAll(".dp-swatch").forEach(x=>x.classList.remove("dp-active"));
         b.classList.add("dp-active");
       });
@@ -1840,51 +1757,37 @@ class DrawingPreviewWidget{
       dot.style.width=size+"px"; dot.style.height=size+"px";
       b.appendChild(dot);
       b.addEventListener("click", ()=>{
-        this.modalEngine.setWidth(wd);
+        this.engine.setWidth(wd);
         widthWrap.querySelectorAll(".dp-widthdot").forEach(x=>x.classList.remove("dp-active"));
         b.classList.add("dp-active");
       });
       widthWrap.appendChild(b);
     });
 
-    document.getElementById("dp-undo").addEventListener("click", ()=> this.modalEngine.undo());
-    document.getElementById("dp-clear-all").addEventListener("click", ()=> this.modalEngine.clearAll());
+    document.getElementById("dp-undo").addEventListener("click", ()=> this.engine.undo());
+    document.getElementById("dp-clear-all").addEventListener("click", ()=> this.engine.clearAll());
   }
 
   _cacheDom(){
     this.el = {
-      popup: document.getElementById("dp-popup"),
-      header: document.getElementById("dp-header"),
-      title: document.getElementById("dp-title"),
-      meta: document.getElementById("dp-meta"),
-      thumbWrap: document.getElementById("dp-thumb-wrap"),
-      thumbBase: document.getElementById("dp-thumb-base"),
-      thumbAnnot: document.getElementById("dp-thumb-annot"),
-      thumbSaveFlag: document.getElementById("dp-save-flag"),
-      penToggle: document.getElementById("dp-pen-toggle"),
-      clearAnnot: document.getElementById("dp-clear-annot"),
+      view: document.getElementById("dp-view"),
+      title: document.getElementById("dp-modal-title"),
+      filterBtns: document.getElementById("dp-thumb-filter"),
       addImage: document.getElementById("dp-add-image"),
       linkExisting: document.getElementById("dp-link-existing"),
+      saveFlag: document.getElementById("dp-modal-save-flag"),
       empty: document.getElementById("dp-empty"),
       loading: document.getElementById("dp-loading"),
       error: document.getElementById("dp-error"),
-      prev: document.getElementById("dp-prev"),
-      next: document.getElementById("dp-next"),
-      counter: document.getElementById("dp-counter"),
-      close: document.getElementById("dp-close"),
-      expandBtn: document.getElementById("dp-expand-btn"),
+      prev: document.getElementById("dp-modal-prev"),
+      next: document.getElementById("dp-modal-next"),
+      counter: document.getElementById("dp-counter2"),
       fileInput: document.getElementById("dp-file-input"),
 
-      modal: document.getElementById("dp-modal"),
-      modalTitle: document.getElementById("dp-modal-title"),
-      modalCounter: document.getElementById("dp-counter2"),
-      modalPrev: document.getElementById("dp-modal-prev"),
-      modalNext: document.getElementById("dp-modal-next"),
-      modalClose: document.getElementById("dp-modal-close"),
-      modalCanvas: document.getElementById("dp-modal-canvas"),
-      modalAnnot: document.getElementById("dp-modal-annot"),
-      modalCanvasWrap: document.getElementById("dp-modal-canvas-wrap"),
-      modalSaveFlag: document.getElementById("dp-modal-save-flag"),
+      body: document.getElementById("dp-modal-body"),
+      canvas: document.getElementById("dp-modal-canvas"),
+      annot: document.getElementById("dp-modal-annot"),
+      canvasWrap: document.getElementById("dp-modal-canvas-wrap"),
       zoomIn: document.getElementById("dp-zoom-in"),
       zoomOut: document.getElementById("dp-zoom-out"),
       zoomLevel: document.getElementById("dp-zoom-level"),
@@ -1893,14 +1796,6 @@ class DrawingPreviewWidget{
   _bindEvents(){
     this.el.prev.addEventListener("click", e=>{e.stopPropagation(); this._goPrev();});
     this.el.next.addEventListener("click", e=>{e.stopPropagation(); this._goNext();});
-    this.el.close.addEventListener("click", e=>{e.stopPropagation(); this.hide();});
-    this.el.expandBtn.addEventListener("click", e=>{e.stopPropagation(); this._openExpanded();});
-    this.el.thumbWrap.addEventListener("click", e=>{
-      if(e.target.closest("#dp-thumb-toolbar") || e.target.closest("#dp-thumb-filter")) return;
-      this._openExpanded();
-    });
-    this.el.penToggle.addEventListener("click", e=>{e.stopPropagation(); this._togglePopupPen();});
-    this.el.clearAnnot.addEventListener("click", e=>{e.stopPropagation(); this.popupEngine.clearAll();});
     this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addAttachment();});
     this.el.linkExisting.addEventListener("click", e=>{e.stopPropagation(); this.filePicker.open();});
     this.el.fileInput.addEventListener("change", e=>{
@@ -1908,33 +1803,17 @@ class DrawingPreviewWidget{
       this._onFileChosen(file);
       e.target.value = "";
     });
-
-    this.el.modalPrev.addEventListener("click", ()=>this._modalPrev());
-    this.el.modalNext.addEventListener("click", ()=>this._modalNext());
-    this.el.modalClose.addEventListener("click", ()=>this._closeExpanded());
     this.el.zoomIn.addEventListener("click", ()=>this._zoom(0.25));
     this.el.zoomOut.addEventListener("click", ()=>this._zoom(-0.25));
 
+    // Pil vänster/höger bläddrar bara när markeringsverktyget är aktivt och
+    // ingen textredigerare är öppen (samma villkor som tidigare, men utan
+    // beroendet på om ett fullskärms-overlay råkade vara synligt).
     document.addEventListener("keydown",(e)=>{
-      if(!this.el.modal.classList.contains("dp-visible")) return;
-      if(e.key==="Escape" && this.modalEngine.tool==="select" && !this.modalEngine.editor) this._closeExpanded();
-      if(e.key==="ArrowLeft" && this.modalEngine.tool==="select") this._modalPrev();
-      if(e.key==="ArrowRight" && this.modalEngine.tool==="select") this._modalNext();
+      if(!this.currentObj || this.engine.tool!=="select" || this.engine.editor) return;
+      if(e.key==="ArrowLeft") this._goPrev();
+      if(e.key==="ArrowRight") this._goNext();
     });
-  }
-  _makeDraggable(){
-    let dragging=false, offX=0, offY=0;
-    this.el.header.addEventListener("mousedown",(e)=>{
-      dragging=true;
-      const r=this.el.popup.getBoundingClientRect();
-      offX=e.clientX-r.left; offY=e.clientY-r.top;
-    });
-    document.addEventListener("mousemove",(e)=>{
-      if(!dragging) return;
-      this.el.popup.style.left=(e.clientX-offX)+"px";
-      this.el.popup.style.top=(e.clientY-offY)+"px";
-    });
-    document.addEventListener("mouseup",()=>dragging=false);
   }
 }
 
