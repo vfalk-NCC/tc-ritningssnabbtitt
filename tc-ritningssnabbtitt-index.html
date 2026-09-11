@@ -183,19 +183,38 @@
   #dp-global-area-filter{ flex:0 1 120px; min-width:0; background:#1c1d20;
     border:1px solid var(--border); color:var(--text); font-size:11px; border-radius:4px; padding:4px 6px; }
 
-  .dp-global-grid{ display:grid; grid-template-columns: minmax(0,1.7fr) minmax(0,0.9fr) minmax(0,1.7fr) auto;
+  /* Kolumnbredder som CSS-variabler (satta på #dp-global-list, ärvs av
+     både tabellhuvudet och alla rader) — låter dragbara handtag ändra EN
+     enda källa istället för att behöva uppdatera varenda rad för sig. */
+  #dp-global-list{
+    --gcol-name: minmax(60px,1.7fr);
+    --gcol-date: minmax(50px,1fr);
+    --gcol-area: minmax(50px,0.9fr);
+    --gcol-comment: minmax(60px,1.7fr);
+  }
+  .dp-global-grid{ display:grid;
+    grid-template-columns: var(--gcol-name) var(--gcol-date) var(--gcol-area) var(--gcol-comment) auto;
     gap:4px 10px; align-items:center; }
   #dp-global-table-head{ padding:5px 12px; flex:0 0 auto; background:var(--panel-2);
     border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
-  .dp-gth{ font-size:10px; text-transform:uppercase; letter-spacing:.03em; color:var(--text-dim);
-    font-weight:600; cursor:pointer; user-select:none; display:flex; align-items:center; gap:3px; }
+  .dp-gth{ position:relative; font-size:10px; text-transform:uppercase; letter-spacing:.03em;
+    color:var(--text-dim); font-weight:600; cursor:pointer; user-select:none;
+    display:flex; align-items:center; gap:3px; }
   .dp-gth:hover{ color:var(--text); }
   .dp-gth .dp-sort-arrow{ font-size:9px; opacity:.8; }
+  /* Dragbart handtag i högerkanten av en kolumnrubrik — justerar bredden på
+     just den kolumnen (se JS: _bindColumnResize). Egen klickyta bredare än
+     det synliga strecket för att vara lätt att träffa. */
+  .dp-gcol-resize{ position:absolute; top:-5px; bottom:-5px; right:-9px; width:11px;
+    cursor:col-resize; z-index:3; }
+  .dp-gcol-resize:hover, .dp-gcol-resize.dp-resizing{ background:rgba(61,155,255,.35); }
   .dp-global-row{ padding:6px 12px; cursor:default; }
   .dp-global-cell-name{ display:flex; flex-direction:column; gap:1px; min-width:0; cursor:pointer; }
   .dp-global-cell-name .dp-attach-namerow{ display:flex; align-items:center; gap:5px; min-width:0; }
   .dp-global-cell-name .dp-attach-name{ max-width:none; flex:1 1 auto; }
   .dp-attach-objname{ font-size:10px; color:var(--text-dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .dp-gcell-date{ font-size:10.5px; color:var(--text-dim); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   .dp-global-row .dp-attach-comment, .dp-global-row .dp-attach-area{ width:100%; box-sizing:border-box;
     text-align:left; font-size:10.5px; }
@@ -256,9 +275,10 @@
         <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
       </div>
       <div id="dp-global-table-head" class="dp-global-grid">
-        <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span></div>
-        <div class="dp-gth" data-sort="area">Område <span class="dp-sort-arrow"></span></div>
-        <div class="dp-gth" data-sort="comment">Kommentar <span class="dp-sort-arrow"></span></div>
+        <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="name"></span></div>
+        <div class="dp-gth" data-sort="date">Datum <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="date"></span></div>
+        <div class="dp-gth" data-sort="area">Område <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="area"></span></div>
+        <div class="dp-gth" data-sort="comment">Kommentar <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="comment"></span></div>
         <div></div>
       </div>
       <div id="dp-global-list-items"></div>
@@ -270,6 +290,7 @@
          (panel-body), permanent, utan mellansteg. -->
     <div id="dp-view">
       <div id="dp-view-header">
+        <button class="dp-icon-btn" id="dp-go-home" title="Till startsidan (alla kopplade filer i projektet)">🏠</button>
         <span id="dp-modal-title">–</span>
         <div id="dp-thumb-filter">
           <button class="dp-icon-btn dp-active" data-filter="all" title="Visa alla">Alla</button>
@@ -1090,10 +1111,11 @@ async function recordInIndex(sel, item){
       name: item.name, kind: item.kind, versionId: item.versionId || null,
       modelId: sel.modelId, guid: sel.guid, runtimeId: sel.runtimeId,
       objectName: sel.name || "", updatedAt: new Date().toISOString(),
-      // Bevara ev. redan ifyllt område/kommentar — det här anropet uppdaterar
-      // bara TC-relaterade fält (namn/objekt/id:n), aldrig användarens egna
-      // manuella data.
+      // Bevara ev. redan ifyllt område/kommentar/EXIF-datum — det här
+      // anropet uppdaterar bara TC-relaterade fält (namn/objekt/id:n),
+      // aldrig användarens egna manuella data eller redan uppmätt EXIF.
       area: prev?.area || "", comment: prev?.comment || "",
+      capturedDate: prev?.capturedDate || null,
     };
     scheduleSaveProjectIndex();
   }catch(err){
@@ -1128,6 +1150,22 @@ async function setIndexComment(fileId, comment){
     scheduleSaveProjectIndex();
   }catch(err){
     console.warn("[index] kunde inte spegla kommentar i indexet:", err);
+  }
+}
+
+// Speglar EXIF-datumet ("datum fotot togs") i projektindexet, i samma anda
+// som setIndexComment ovan — annars skulle Datum-kolumnen i den projekt-
+// övergripande listan behöva ladda ner och läsa EXIF ur VARJE fil bara för
+// att visa listan, istället för att fyllas i allteftersom foton öppnas
+// (samma lat-inläsning som resten av indexet bygger på, se DEL 1d-kommentaren).
+async function setIndexCapturedDate(fileId, dateIso){
+  try{
+    const idx = await loadProjectIndex();
+    if(!idx.files[fileId] || idx.files[fileId].capturedDate === dateIso) return;
+    idx.files[fileId].capturedDate = dateIso;
+    scheduleSaveProjectIndex();
+  }catch(err){
+    console.warn("[index] kunde inte spegla EXIF-datum i indexet:", err);
   }
 }
 
@@ -1396,6 +1434,16 @@ function drawAnnotationItem(ctx,w,h,item,selected,scale,zoom=1){
         ctx.strokeRect(minX-4,minY-4,(maxX-minX)+8,(maxY-minY)+8);
         ctx.restore();
       }
+      if((item.type==="line" || item.type==="arrow") && item.points?.length===2){
+        // Dragbara handtag på start-/slutpunkten — samma idé som pratbubblans
+        // ankarpunkt, låter en justera bara EN ände efter att pilen/linjen
+        // redan placerats ut (se _hitTestDetailed/_onMove: "p0"/"p1").
+        ctx.fillStyle="#3d9bff"; ctx.strokeStyle="#ffffff"; ctx.lineWidth=1;
+        item.points.forEach(pt=>{
+          const hp = P(pt);
+          ctx.beginPath(); ctx.arc(hp.x,hp.y,5,0,Math.PI*2); ctx.fill(); ctx.stroke();
+        });
+      }
     }
   }
 }
@@ -1483,6 +1531,10 @@ async function renderRealImage(canvas, imgItem){
         console.warn("[exif] kunde inte läsa EXIF ur", imgItem.name, exifErr);
         entry.exif = null;
       }
+      // Spegla det extraherade datumet i projektindexet (DEL 1d) så Datum-
+      // kolumnen i den projektövergripande listan kan visa det utan att
+      // själv behöva ladda ner/läsa EXIF ur filen.
+      if(entry.exif?.dateIso) setIndexCapturedDate(imgItem.id, entry.exif.dateIso);
     }
     const bitmap = entry.bitmap;
     const ctx = canvas.getContext("2d");
@@ -1768,7 +1820,7 @@ class AnnotationEngine{
   }
   _dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
   _cursorForPart(part){
-    if(part==="anchor") return "crosshair";
+    if(part==="anchor" || part==="p0" || part==="p1") return "crosshair";
     if(part==="resize-nw" || part==="resize-se") return "nwse-resize";
     if(part==="resize-ne" || part==="resize-sw") return "nesw-resize";
     return "move";
@@ -1870,6 +1922,12 @@ class AnnotationEngine{
         if(south) h = Math.max(minH, ob.h+dy);
         else { h = Math.max(minH, ob.h-dy); y = ob.y+ob.h-h; }
         updated.box = { x, y, w, h };
+      } else if(this.dragging.part==="p0" || this.dragging.part==="p1"){
+        // Justera bara start- eller slutpunkten på en pil/linje efter att
+        // den placerats ut, istället för att flytta hela pilen.
+        updated = JSON.parse(JSON.stringify(orig));
+        const idx = this.dragging.part==="p0" ? 0 : 1;
+        updated.points[idx] = { x: orig.points[idx].x+dx, y: orig.points[idx].y+dy };
       } else {
         updated = this._shiftItem(orig, dx, dy);
       }
@@ -1975,6 +2033,13 @@ class AnnotationEngine{
         if(p.x>=b.x-pad && p.x<=b.x+b.w+pad && p.y>=b.y-pad && p.y<=b.y+b.h+pad) return {index:i, part:"box"};
         continue;
       }
+      if((item.type==="line" || item.type==="arrow") && item.points?.length===2){
+        // Ändpunkterna kollas FÖRE hela pilen/linjen (samma princip som
+        // pratbubblans hörn ovan), så man kan justera bara start- eller
+        // slutpunkten istället för att alltid flytta hela pilen.
+        if(this._dist(p, item.points[0]) <= anchorPad) return {index:i, part:"p0"};
+        if(this._dist(p, item.points[1]) <= anchorPad) return {index:i, part:"p1"};
+      }
       const b=this._bounds(item);
       if(p.x>=b.minX-pad && p.x<=b.maxX+pad && p.y>=b.minY-pad && p.y<=b.maxY+pad) return {index:i, part:"whole"};
     }
@@ -2063,11 +2128,66 @@ class GlobalIndexPanel{
     this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
     this.el.search.addEventListener("input", ()=> this._renderRows());
     this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
-      th.addEventListener("click", ()=>{
+      th.addEventListener("click", (e)=>{
+        // Klick på draghandtaget (kolumnbredd) ska INTE räknas som klick på
+        // hela rubriken (sortering) — se _bindColumnResize.
+        if(e.target.closest(".dp-gcol-resize")) return;
         const field = th.dataset.sort;
         if(this._sortField===field) this._sortDir = this._sortDir==="asc" ? "desc" : "asc";
         else { this._sortField = field; this._sortDir = "asc"; }
         this._renderRows();
+      });
+    });
+    this._bindColumnResize();
+  }
+
+  // Dragbara handtag i högerkanten av varje kolumnrubrik (Namn/Datum/
+  // Område/Kommentar) för att justera kolumnbredden. Bredderna hålls som
+  // CSS-variabler på #dp-global-list (se CSS) — huvudet och alla rader
+  // delar samma grid-template-columns via var(), så EN uppdatering räcker
+  // för att flytta både rubriken och alla rader i takt. Sparas i
+  // localStorage per webbläsare så det inte behöver göras om varje gång.
+  _bindColumnResize(){
+    const COL_KEY = "rsst-global-col-widths";
+    const listEl = this.el.root;
+    try{
+      const saved = JSON.parse(localStorage.getItem(COL_KEY) || "null");
+      if(saved) Object.entries(saved).forEach(([col,val])=>{
+        if(val) listEl.style.setProperty(`--gcol-${col}`, val);
+      });
+    }catch(err){ /* privat läge/blockerad lagring — ingen big deal, kör med förvalen */ }
+
+    this.el.head.querySelectorAll(".dp-gcol-resize").forEach(handle=>{
+      handle.addEventListener("click", e=> e.stopPropagation());
+      handle.addEventListener("pointerdown", e=>{
+        e.preventDefault();
+        e.stopPropagation();
+        const col = handle.dataset.col;
+        const cell = handle.closest(".dp-gth");
+        const startX = e.clientX;
+        const startW = cell.getBoundingClientRect().width;
+        handle.classList.add("dp-resizing");
+        try{ handle.setPointerCapture(e.pointerId); }catch(err){}
+
+        const onMove = ev=>{
+          const newW = Math.max(40, startW + (ev.clientX-startX));
+          listEl.style.setProperty(`--gcol-${col}`, newW+"px");
+        };
+        const onUp = ()=>{
+          handle.classList.remove("dp-resizing");
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onUp);
+          try{
+            const widths = {};
+            ["name","date","area","comment"].forEach(c=>{
+              const v = listEl.style.getPropertyValue(`--gcol-${c}`).trim();
+              if(v) widths[c] = v;
+            });
+            localStorage.setItem(COL_KEY, JSON.stringify(widths));
+          }catch(err){ /* se ovan */ }
+        };
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onUp);
       });
     });
   }
@@ -2122,6 +2242,9 @@ class GlobalIndexPanel{
       let cmp;
       if(field==="area") cmp = String(a[1].area||"").localeCompare(String(b[1].area||""), "sv");
       else if(field==="comment") cmp = String(a[1].comment||"").localeCompare(String(b[1].comment||""), "sv");
+      // ISO 8601-strängar (YYYY-MM-DDTHH:mm:ss...) sorterar redan kronologiskt
+      // som vanlig textjämförelse — ingen anledning att parsa till Date först.
+      else if(field==="date") cmp = String(a[1].capturedDate||"").localeCompare(String(b[1].capturedDate||""), "sv");
       else cmp = String(a[1].name).localeCompare(String(b[1].name), "sv");
       if(!cmp && field!=="name") cmp = String(a[1].name).localeCompare(String(b[1].name), "sv");
       return cmp*dir;
@@ -2157,7 +2280,21 @@ class GlobalIndexPanel{
       nameCell.append(nameRow, objName);
       nameCell.addEventListener("click", ()=> this._openFile(fileId, rec));
 
-      // Kolumn 2: Område (redigerbart, manuellt fält).
+      // Kolumn 2: Datum (bara foton har EXIF — fylls i lat, se
+      // renderRealImage/setIndexCapturedDate, tomt tills fotot öppnats minst
+      // en gång). PDF:er har aldrig EXIF och visar därför alltid "–".
+      const dateCell = document.createElement("div");
+      dateCell.className = "dp-gcell-date";
+      if(rec.capturedDate){
+        const dt = new Date(rec.capturedDate);
+        dateCell.textContent = isNaN(dt) ? "–" : dt.toLocaleDateString("sv-SE");
+        dateCell.title = isNaN(dt) ? "" : dt.toLocaleString("sv-SE", {dateStyle:"medium", timeStyle:"short"});
+      } else {
+        dateCell.textContent = rec.kind==="image" ? "–" : "";
+        dateCell.title = rec.kind==="image" ? "Okänt — öppna fotot en gång så läses datumet av" : "";
+      }
+
+      // Kolumn 3: Område (redigerbart, manuellt fält).
       const areaCell = document.createElement("div");
       const area = document.createElement("input");
       area.className = "dp-attach-area";
@@ -2176,7 +2313,7 @@ class GlobalIndexPanel{
       });
       areaCell.appendChild(area);
 
-      // Kolumn 3: Kommentar (redigerbart, speglas till filens egen companion-fil).
+      // Kolumn 4: Kommentar (redigerbart, speglas till filens egen companion-fil).
       const commentCell = document.createElement("div");
       const comment = document.createElement("input");
       comment.className = "dp-attach-comment";
@@ -2192,7 +2329,7 @@ class GlobalIndexPanel{
       });
       commentCell.appendChild(comment);
 
-      // Kolumn 4: "soptunna" — tar bort kopplingen mellan objektet och filen.
+      // Kolumn 5: "soptunna" — tar bort kopplingen mellan objektet och filen.
       const removeCell = document.createElement("div");
       const removeBtn = document.createElement("button");
       removeBtn.className = "dp-attach-remove";
@@ -2205,7 +2342,7 @@ class GlobalIndexPanel{
       });
       removeCell.appendChild(removeBtn);
 
-      row.append(nameCell, areaCell, commentCell, removeCell);
+      row.append(nameCell, dateCell, areaCell, commentCell, removeCell);
       this.el.items.appendChild(row);
     });
   }
@@ -2740,7 +2877,7 @@ class DrawingPreviewWidget{
     // AnnotationEngine, det är bara knapparna för att skapa NYA som tagits
     // bort. Panorera har ingen egen knapp längre, se _bindPan (mittenklick).
     const TOOLS = [
-      {id:"select", icon:"↖", label:"Markera", title:"Markera, flytta och redigera. På en pratbubbla: dra i hörnen för att ändra storlek, i punkten (ringen) för att peka om, eller i fönstret för att flytta det."},
+      {id:"select", icon:"🖱️", label:"Markera", title:"Markera, flytta och redigera. På en pratbubbla: dra i hörnen för att ändra storlek, i punkten (ringen) för att peka om, eller i fönstret för att flytta det."},
       {id:"arrow", icon:"↗", label:"Pil"},
       {id:"pen", icon:"✎", label:"Rita", title:"Frihandsritning."},
       {id:"text", icon:"T", label:"Textruta"},
@@ -2817,6 +2954,7 @@ class DrawingPreviewWidget{
   _cacheDom(){
     this.el = {
       view: document.getElementById("dp-view"),
+      goHome: document.getElementById("dp-go-home"),
       title: document.getElementById("dp-modal-title"),
       filterBtns: document.getElementById("dp-thumb-filter"),
       addImage: document.getElementById("dp-add-image"),
@@ -2842,6 +2980,10 @@ class DrawingPreviewWidget{
     };
   }
   _bindEvents(){
+    // "Startsida"-knappen: går tillbaka till den projektomfattande listan
+    // (GlobalIndexPanel) utan att kräva att man avmarkerar objektet i
+    // 3D-vyn för hand — se hide() nedan, som redan gör precis det.
+    this.el.goHome.addEventListener("click", e=>{ e.stopPropagation(); this.hide(); });
     this.el.prev.addEventListener("click", e=>{e.stopPropagation(); this._goPrev();});
     this.el.next.addEventListener("click", e=>{e.stopPropagation(); this._goNext();});
     this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addAttachment();});
