@@ -702,18 +702,28 @@ function tcApiUrl(path){
    gång per response (body kan bara läsas en gång) — används därför bara
    i grenar där vi redan vet att vi INTE ska läsa svaret på något annat sätt. */
 async function tcErrBody(res){
+  // Loggar ALLTID status + headers + rå svarskropp till konsolen (F12),
+  // oavsett om vi lyckas hitta ett bra meddelande att visa i dialogrutan
+  // eller inte — tillagd 2026-09-11 efter ett 500-fel där svarskroppen
+  // visade sig vara helt TOM (inget mer att hämta där), så att man i alla
+  // fall kan se ev. headers (t.ex. en request-id) att skicka vidare till
+  // Trimbles support, och för att skilja "genuint tomt svar" från "gick
+  // inte att läsa svaret" (två helt olika saker att felsöka vidare på).
+  let headersObj = {};
+  try{ res.headers.forEach((v,k)=>{ headersObj[k]=v; }); }catch{}
+  let text = "";
+  let readError = null;
+  try{ text = await res.text(); }
+  catch(e){ readError = describeError(e); }
+  console.warn("[TC] Fel-svar från Trimble:", { url: res.url, status: res.status, statusText: res.statusText,
+    headers: headersObj, bodyLength: text.length, body: text.slice(0,1000) || "(tomt)", kundeInteLäsaBody: readError });
+  if(readError || !text) return "";
   try{
-    const text = await res.text();
-    if(!text) return "";
-    try{
-      const j = JSON.parse(text);
-      const msg = j.message || j.error || j.errorMessage || j.reason || j.detail || j.title;
-      return msg ? String(msg).slice(0,300) : JSON.stringify(j).slice(0,300);
-    }catch{
-      return text.slice(0,300);
-    }
+    const j = JSON.parse(text);
+    const msg = j.message || j.error || j.errorMessage || j.reason || j.detail || j.title;
+    return msg ? String(msg).slice(0,300) : JSON.stringify(j).slice(0,300);
   }catch{
-    return "";
+    return text.slice(0,300);
   }
 }
 
