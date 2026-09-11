@@ -368,6 +368,10 @@
            för v1:s enda confirm()-dialog. Se DEL 1e i JS-delen. -->
       <div id="dp-3d-panel">
         <h4>🧊 Lägg till i 3D-vy (experimentellt)</h4>
+        <div class="dp-3d-row" style="color:var(--text-dim);">
+          Ingen klickbar punktplacering här (Trimbles API kan inte läsa av var man klickar i själva 3D-modellen) —
+          ankaret väljs istället nedan, och reglagen finjusterar därifrån.
+        </div>
         <div class="dp-3d-row">
           <label>Ankarpunkt på markerat objekt:
             <select id="dp-3d-anchor">
@@ -1258,15 +1262,35 @@ function buildIfcTextForAttachment(item, widthM, heightM, placement){
 }
 
 /* Laddar upp en redan genererad IFC-textsträng till TC_PLACEMENTS_FOLDER_NAME.
-   Kastar fel med ett användarvänligt meddelande om något går fel. */
+   Kastar fel med ett användarvänligt meddelande om något går fel — VIKTIGT:
+   felmeddelandet talar om VILKET av de två TC-anropen (mapp vs. uppladdning)
+   som faktiskt misslyckades, istället för ett generiskt "det gick inte",
+   så att vi kan felsöka vidare utifrån vad dialogrutan faktiskt säger. Hela
+   anropskedjan loggas också till konsolen (F12) steg för steg. */
 async function createModelPlaneForAttachment(item, ifcText){
   if(!tcAccessToken) throw new Error("Kräver en aktiv Trimble Connect-anslutning.");
   const blob = new Blob([ifcText], { type: "application/x-step" });
   const baseName = (item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
   const filename = `${baseName} - 3D-platta.ifc`;
+  console.log("[TC 3D] startar uppladdning:", { filename, bytes: ifcText.length, projectId: tcProject?.id });
 
-  const folderId = await ensurePlacementsFolder();
-  const { fileId, versionId } = await uploadFileToFolder(folderId, filename, blob);
+  let folderId;
+  try{
+    folderId = await ensurePlacementsFolder();
+    console.log("[TC 3D] mapp OK:", { folderId, name: TC_PLACEMENTS_FOLDER_NAME });
+  }catch(err){
+    console.error("[TC 3D] STEG 1 (hitta/skapa mapp) misslyckades:", err);
+    throw new Error(`Kunde inte hitta/skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}": ${err.message}`);
+  }
+
+  let fileId, versionId;
+  try{
+    ({ fileId, versionId } = await uploadFileToFolder(folderId, filename, blob));
+    console.log("[TC 3D] uppladdning OK:", { fileId, versionId });
+  }catch(err){
+    console.error("[TC 3D] STEG 2 (själva filöverföringen) misslyckades:", err);
+    throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${err.message}`);
+  }
   return { fileId, versionId, filename };
 }
 
@@ -2980,6 +3004,7 @@ class DrawingPreviewWidget{
     return this._last3d;
   }
   async _updateGuide3d(placement){
+    console.log("[TC 3D] Uppdatera guide klickad/körs. tcApi.viewer.addIcon finns:", !!tcApi?.viewer?.addIcon);
     if(!tcApi?.viewer?.addIcon){
       this._setNote3d("Kunde inte visa guiden — viewer.addIcon verkar inte finnas i den här TC-miljön/versionen. Resten av panelen funkar ändå.");
       return;
@@ -2989,11 +3014,15 @@ class DrawingPreviewWidget{
       const dot = "data:image/svg+xml," + encodeURIComponent(
         `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='12' cy='12' r='10' fill='#ff3b30' stroke='white' stroke-width='2'/></svg>`);
       const icons = placement.corners.map((p,i)=>({ id: Date.now()+i, iconPath: dot, position: p, size: 0.3 }));
+      console.log("[TC 3D] anropar addIcon med:", icons);
       await tcApi.viewer.addIcon(icons);
       this._guideIcons = icons;
+      console.log("[TC 3D] addIcon returnerade utan fel (inget kastat fel betyder INTE nödvändigtvis att punkterna syns — se konsolen ovan för exakt payload, och kolla 3D-vyn).");
+      this._setNote3d('addIcon anropades utan fel (se webbläsarkonsolen, F12, för exakt vad som skickades). Syns INGA punkter ändå i 3D-vyn kan orsaken vara fel enhet på "size" '
+        + '(antagen meter), fel koordinatsystem för "position", eller att data:-URI:n som ikon inte stöds — berätta gärna vad du ser (eller inte ser) så justerar jag.');
     }catch(err){
-      console.warn("[TC] addIcon misslyckades (guiden kunde inte visas):", err);
-      this._setNote3d("Kunde inte visa guiden i 3D-vyn (se konsolen) — troligen skiljer sig PointIcon-formatet från vad jag antog. Resten av panelen funkar ändå.");
+      console.warn("[TC 3D] addIcon kastade ett fel (guiden kunde inte visas):", err);
+      this._setNote3d(`addIcon gav ett fel: "${err.message}" (fullständigt fel i konsolen, F12) — troligen skiljer sig PointIcon-formatet från vad jag antog. Resten av panelen funkar ändå.`);
     }
   }
   async _clearGuide3d(){
@@ -3015,28 +3044,35 @@ class DrawingPreviewWidget{
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }
   async _upload3d(){
+    console.log("[TC 3D] Ladda upp-knappen klickad.");
     if(!tcAccessToken){
       alert("Den här funktionen kräver en aktiv Trimble Connect-anslutning (fungerar inte i testläge) — använd \"Ladda ner IFC\" istället.");
       return;
     }
     const res = await this._recompute3d({ updateGuide:false });
-    if(!res) return;
-    const ok = window.confirm(
-      `Skapa en 3D-platta (${res.widthM.toFixed(2)} × ${res.heightM.toFixed(2)} m) av "${res.item.name}" och ladda upp den till mappen `
-      + `"${TC_PLACEMENTS_FOLDER_NAME}" i projektet?\n\nEXPERIMENTELL FUNKTION — testad offline, inte mot en riktig Trimble Connect-miljö än.`
-    );
-    if(!ok) return;
+    if(!res){ console.warn("[TC 3D] avbröt: _recompute3d gav inget resultat (troligen ingen kalibrering)."); return; }
+    // window.confirm() togs bort härifrån (2026-09-11): en tidigare version
+    // hade en bekräftelseruta här, men om Trimble Connects iframe skulle
+    // blockera/sandboxa JS-dialogrutor kunde confirm() tänkas returnera
+    // false TYST (utan fel) och HELA uppladdningen skulle då avbrytas utan
+    // att något syns — vilket exakt matchar felrapporten "det går inte att
+    // ladda upp" (inget felmeddelande alls). Panelens egna kontroller
+    // (öppna panelen, ev. justera reglage, klicka just den här knappen)
+    // är redan en tillräckligt medveten handling, så bekräftelserutan var
+    // ändå bara extra friktion — borttagen istället för buggfixad.
     this.el.upload3d.disabled = true;
     const prevText = this.el.upload3d.textContent;
     this.el.upload3d.textContent = "Laddar upp…";
     try{
       const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement);
+      console.log("[TC 3D] IFC-text genererad, laddar upp…", { längd: ifcText.length });
       const up = await createModelPlaneForAttachment(res.item, ifcText);
+      console.log("[TC 3D] KLART:", up);
       alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}".\n\n`
         + `Nästa steg i Trimble Connect: Modeller-panelen ▸ lägg till filen som modell om den inte redan syns ▸ markera den ▸ `
         + `"Positionsinställningar" om du vill finjustera ytterligare.`);
     }catch(err){
-      console.error("[TC] kunde inte skapa/ladda upp 3D-platta:", err);
+      console.error("[TC 3D] kunde inte skapa/ladda upp 3D-platta:", err);
       alert("Kunde inte skapa 3D-plattan: " + err.message);
     }finally{
       this.el.upload3d.disabled = false;
