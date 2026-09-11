@@ -402,6 +402,9 @@
           <label><input type="checkbox" id="dp-3d-guide" checked> Synlig guide i 3D-vyn (fyra hörnpunkter)</label>
           <button class="dp-btn" id="dp-3d-guide-update">↻ Uppdatera guide i 3D-vyn</button>
         </div>
+        <div class="dp-3d-row">
+          <label><input type="checkbox" id="dp-3d-texture"> 🧪 Bädda in bilden som textur (mycket experimentellt — se not nedan)</label>
+        </div>
         <div id="dp-3d-note">
           Guiden ritas som fyra hörnpunkter i 3D-vyn (inte den riktiga ritningsbilden — Trimbles API kan inte rendera
           texturer live) så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är
@@ -409,6 +412,10 @@
           Storleken (bredd/höjd) kommer från kalibreringen (verktyget "Kalibrera"). Efter uppladdning kan du finjustera
           ytterligare med Trimble Connects egna "Positionsinställningar" i Modeller-panelen.
           <b>Experimentellt</b> — testat offline, inte mot en riktig Trimble Connect-miljö än.
+          Kryssrutan <b>"Bädda in bilden som textur"</b> är ett ännu osäkrare försök att få själva bilden att synas på plattan
+          (inte bara en grå platta) — det är okänt om Trimble Connects konvertering av IFC-filer överhuvudtaget stödjer
+          texturer, och om hörnen (UV-koordinaterna) hamnar rätt väg. Låt den vara AVKRYSSAD om du bara vill ha den
+          beprövade grå plattan.
         </div>
         <div class="dp-3d-row dp-3d-actions">
           <button class="dp-btn" id="dp-3d-download">⬇ Ladda ner IFC</button>
@@ -1087,6 +1094,15 @@ function ifcReal(n){
 function ifcStr(s){
   return String(s==null?"":s).replace(/'/g,"''").replace(/[\r\n\t]/g," ").slice(0,255);
 }
+/* STEP BINARY-literaler skrivs som citattecken + en "padding"-siffra (0-3,
+   hur många av de FÖRSTA bitarna i den första hex-siffran som är utfyllnad)
+   + hexsiffror i VERSALER. Rådata (t.ex. bytes från en JPEG) har alltid ett
+   bitantal delbart med 4 (8 bitar/byte), så paddingsiffran är alltid "0". */
+function bytesToHex(bytes){
+  let s = "";
+  for(let i=0;i<bytes.length;i++) s += bytes[i].toString(16).padStart(2,"0").toUpperCase();
+  return s;
+}
 
 /* Gör om ett kastat/avvisat värde till en så informativ textrad som möjligt.
    Anledning: ett riktigt testfel visade "addIcon gav ett fel: undefined" —
@@ -1117,6 +1133,14 @@ function describeError(err){
    i meter). Stödjer bara metriska enheter — rimligt för svenska
    byggritningar. Okänd enhet => null (anroparen får fråga användaren). */
 const IFC_UNIT_TO_METERS = { mm:0.001, cm:0.01, dm:0.1, m:1, km:1000 };
+
+/* Ikon för guide-punkterna i 3D-vyn (viewer.addIcon). BUGFIX (verifierat mot
+   riktig Trimble Connect-miljö 2026-09-11): en SVG-data-URI gav
+   "InvalidStateError: The source image could not be decoded" — Trimbles
+   ikon-laddare (PointIconModel) verkar inte kunna avkoda data:image/svg+xml.
+   En vanlig PNG (samma röda prick, förgenererad och base64-inbäddad här)
+   fungerar med samma bild-avkodning som alla andra rasterbilder. */
+const GUIDE_ICON_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAA0ElEQVR4nO2XSxLDIAxDQ2/UfY7ffY9EVs3wsWyBYWCm0TqWXowD5Dj+XaGnKMYYoWEITZ70w1qoB+Y1K5ytUwmhwfnGRZ+vHAS6AQHEcC2YAJEgRIAqvCXYACkh7BnwhBP1FUD29t5wwafsbgbQO+2tSnPwEox6e8OP2gdm6gaYsvalhFnYpwMPwAOwHCA7JMCR6lbi+8vbpwOVRncB+GUArRfKXqU5VQemzIKw9hBAK/aGS9rzTqhCWCCjbsUUCCFrsKl9oPfrYOqW/xsu1wUbR14yhcHdowAAAABJRU5ErkJggg==";
 
 /* ---------------------------------------------------------------------
    Vektormatte — DELAS mellan den levande 3D-guiden (addIcon, ritas direkt
@@ -1159,8 +1183,21 @@ function computePlanePlacement({ anchor, offset, rotationDeg=0, tiltDeg=0, width
    externa resurser) med EN tunn rektangulär platta i verklig storlek,
    placerad enligt "placement" (se computePlanePlacement — origin/normal/
    refDir i världskoordinater). Om "placement" utelämnas placeras plattan
-   som förut: centrerad i modellens origo (0,0,0), liggande plant. */
-function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.005, placement = null }){
+   som förut: centrerad i modellens origo (0,0,0), liggande plant.
+
+   "texture" är HELT VALFRITT (default $=ingen) — om den utelämnas blir
+   resultatet ORDAGRANT samma fil som innan (den beprövade "grå platta"-
+   geometrin, en extruderad rektangulär solid, #40-#50). Anges texture =
+   { jpegBytes: Uint8Array } byts geometrin istället ut mot en dubbelsidig
+   TESSELLERAD platt yta (fyra delade hörnpunkter, två trianglar med
+   normalen "uppåt" + två speglade trianglar med normalen "nedåt" — så
+   plattan syns oavsett från vilket håll man tittar på den, utan att
+   behöva en hel tjock låda) med JPEG-bilden inbäddad rakt i .ifc-filen
+   som en IfcBlobTexture (ingen extern bildfil, allt i en enda uppladdning).
+   Detta är den EXPERIMENTELLA grenen — UV-orienteringen (vilket hörn som
+   hamnar var) och om Trimble Connects konverterare överhuvudtaget stödjer
+   IFC-texturer är INTE bekräftat ännu, bara strukturellt validerat offline. */
+function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.005, placement = null, texture = null }){
   const hw = ifcReal(widthM/2), hh = ifcReal(heightM/2), th = ifcReal(thicknessM);
   const origin = placement?.origin || {x:0,y:0,z:0};
   const normal = placement?.normal || {x:0,y:0,z:1};
@@ -1170,6 +1207,50 @@ function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.
   const nm = ifcStr(name || "Ritning");
   const desc = ifcStr(description || "");
   const nowTs = Math.floor(Date.now()/1000);
+
+  // Geometrilinjerna (#40-#50-blocket) skiljer sig mellan de två grenarna,
+  // men delas in i EXAKT samma "fack" (#49/#50 återanvänds med samma
+  // nummer i båda fallen) så att resten av filen (placering, proxy-objekt,
+  // spatial struktur) är identisk oavsett vilken gren som valts.
+  let geometryLines;
+  if(texture && texture.jpegBytes && texture.jpegBytes.length){
+    const rasterCode = `"0${bytesToHex(texture.jpegBytes)}"`;
+    geometryLines = [
+      // Fyra hörnpunkter i LOKALA koordinater (samma ordning som hörnen i
+      // computePlanePlacement: SV,SO,NO,NV) — z=0, plant i lokalplanet.
+      // Världsplaceringen sköts av #51/#63 precis som i den vanliga grenen.
+      `#80=IFCCARTESIANPOINTLIST3D(((-${hw},-${hh},0.),(${hw},-${hh},0.),(${hw},${hh},0.),(-${hw},${hh},0.)));`,
+      // Dubbelsidig: två trianglar med "normal uppåt"-lindning (1,2,3)(1,3,4)
+      // + två till med OMVÄND lindning (1,3,2)(1,4,3) så plattan syns även
+      // underifrån/bakifrån (annars osynlig p.g.a. backface culling).
+      `#81=IFCTRIANGULATEDFACESET(#80,$,.F.,((1,2,3),(1,3,4),(1,3,2),(1,4,3)),$);`,
+      `#49=IFCSHAPEREPRESENTATION(#11,'Body','Tessellation',(#81));`,
+      `#50=IFCPRODUCTDEFINITIONSHAPE($,$,(#49));`,
+      // Textur: JPEG-bytes inbäddade direkt som ett BINARY-literal (ingen
+      // extern fil). Side=.BOTH. eftersom ytan är dubbelsidig.
+      `#70=IFCBLOBTEXTURE(.F.,.F.,$,$,$,'JPEG',${rasterCode});`,
+      `#71=IFCSURFACESTYLEWITHTEXTURES((#70));`,
+      `#72=IFCSURFACESTYLE($,.BOTH.,(#71));`,
+      `#73=IFCSTYLEDITEM(#81,(#72),$);`,
+      // UV-koordinater för de fyra hörnen, SAMMA ordning som punktlistan
+      // ovan (SV,SO,NO,NV) => (0,0),(1,0),(1,1),(0,1).
+      `#74=IFCTEXTUREVERTEXLIST(((0.,0.),(1.,0.),(1.,1.),(0.,1.)));`,
+      `#75=IFCINDEXEDTEXTUREMAP((#70),#81,#74);`,
+    ];
+  }else{
+    geometryLines = [
+      `#40=IFCCARTESIANPOINT((-${hw},-${hh}));`,
+      `#41=IFCCARTESIANPOINT((${hw},-${hh}));`,
+      `#42=IFCCARTESIANPOINT((${hw},${hh}));`,
+      `#43=IFCCARTESIANPOINT((-${hw},${hh}));`,
+      `#44=IFCCARTESIANPOINT((-${hw},-${hh}));`,
+      `#45=IFCPOLYLINE((#40,#41,#42,#43,#44));`,
+      `#46=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#45);`,
+      `#48=IFCEXTRUDEDAREASOLID(#46,#9,#7,${th});`,
+      `#49=IFCSHAPEREPRESENTATION(#11,'Body','SweptSolid',(#48));`,
+      `#50=IFCPRODUCTDEFINITIONSHAPE($,$,(#49));`,
+    ];
+  }
 
   return [
     "ISO-10303-21;",
@@ -1203,16 +1284,7 @@ function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.
     `#30=IFCRELAGGREGATES('${gAggPS}',#5,$,$,#16,(#23));`,
     `#31=IFCRELAGGREGATES('${gAggSB}',#5,$,$,#23,(#25));`,
     `#32=IFCRELAGGREGATES('${gAggBS}',#5,$,$,#25,(#27));`,
-    `#40=IFCCARTESIANPOINT((-${hw},-${hh}));`,
-    `#41=IFCCARTESIANPOINT((${hw},-${hh}));`,
-    `#42=IFCCARTESIANPOINT((${hw},${hh}));`,
-    `#43=IFCCARTESIANPOINT((-${hw},${hh}));`,
-    `#44=IFCCARTESIANPOINT((-${hw},-${hh}));`,
-    `#45=IFCPOLYLINE((#40,#41,#42,#43,#44));`,
-    `#46=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#45);`,
-    `#48=IFCEXTRUDEDAREASOLID(#46,#9,#7,${th});`,
-    `#49=IFCSHAPEREPRESENTATION(#11,'Body','SweptSolid',(#48));`,
-    `#50=IFCPRODUCTDEFINITIONSHAPE($,$,(#49));`,
+    ...geometryLines,
     // Plattans VÄRLDSplacering (origo/normal/refDir) — se computePlanePlacement().
     // Själva geometrin (#40-#48) ligger kvar i ett enkelt lokalt koordinatsystem;
     // det är #51 som faktiskt flyttar/roterar/lutar den ut i modellens rymd.
@@ -1275,15 +1347,41 @@ function computeAttachmentPlaneSize(scale, canvasW, canvasH, extraScale=1){
   return { widthM, heightM };
 }
 
+/* Fångar en ren, upplösningsbegränsad bild av bilagan (ritning/foto) för
+   inbäddning som IFC-textur — återanvänder renderAttachment(canvas,item)
+   (samma funktion som ritar förhandsvisningen) så att texturen garanterat
+   matchar exakt det man ser i panelen, brevbrevlådeanpassad ("letterboxed")
+   till plattans bredd/höjd-förhållande. maxDim begränsar filstorleken
+   (en hel .ifc-fil med en STOR bild inbäddad som text-hex kan annars bli
+   flera gånger större än själva bilden). */
+async function captureTextureJpeg(item, widthM, heightM, { maxDim=1400, quality=0.82 } = {}){
+  const aspect = (widthM>0 && heightM>0) ? widthM/heightM : 1;
+  let cw, ch;
+  if(aspect >= 1){ cw = maxDim; ch = Math.max(1, Math.round(maxDim/aspect)); }
+  else { ch = maxDim; cw = Math.max(1, Math.round(maxDim*aspect)); }
+  const canvas = document.createElement("canvas");
+  canvas.width = cw; canvas.height = ch;
+  await renderAttachment(canvas, item);
+  const dataUrl = canvas.toDataURL("image/jpeg", quality);
+  const base64 = dataUrl.split(",")[1] || "";
+  const binStr = atob(base64);
+  const bytes = new Uint8Array(binStr.length);
+  for(let i=0;i<binStr.length;i++) bytes[i] = binStr.charCodeAt(i);
+  return bytes;
+}
+
 /* Bygger IFC-texten för en given bilaga + redan uträknad placering (se
    computePlanePlacement) — delas av både "Ladda ner"- och "Ladda upp
    till projekt"-knapparna i DEL 2/DrawingPreviewWidget, så de garanterat
-   producerar identisk fil. */
-function buildIfcTextForAttachment(item, widthM, heightM, placement){
+   producerar identisk fil. "texture" är valfri — se buildIfcPlaneFile(). */
+function buildIfcTextForAttachment(item, widthM, heightM, placement, texture = null){
+  const textureNote = texture ? ` Bilden är inbäddad som textur (experimentellt — kontrollera att UV-orienteringen ser rätt ut).`
+    : ` Grå platta utan textur (klicka på objektet i Trimble Connect och öppna det i den här appen för att se ritningen/fotot).`;
   const description = `Genererad platta för "${item.name}". Verklig storlek: ${widthM.toFixed(2)} × ${heightM.toFixed(2)} m. `
     + `Skapad av Quick viewer by VFA ${new Date().toLocaleDateString("sv-SE")}. Ankare/offset/rotation/lutning satta i appens `
-    + `"Lägg till i 3D-vy"-panel. Finjustera vid behov ytterligare med Trimble Connects "Positionsinställningar" (Align 3D Models).`;
-  return buildIfcPlaneFile({ widthM, heightM, name: item.name, description, placement });
+    + `"Lägg till i 3D-vy"-panel. Finjustera vid behov ytterligare med Trimble Connects "Positionsinställningar" (Align 3D Models).`
+    + textureNote;
+  return buildIfcPlaneFile({ widthM, heightM, name: item.name, description, placement, texture });
 }
 
 /* Laddar upp en redan genererad IFC-textsträng till TC_PLACEMENTS_FOLDER_NAME.
@@ -3037,15 +3135,13 @@ class DrawingPreviewWidget{
     }
     await this._clearGuide3d();
     try{
-      const dot = "data:image/svg+xml," + encodeURIComponent(
-        `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='12' cy='12' r='10' fill='#ff3b30' stroke='white' stroke-width='2'/></svg>`);
-      const icons = placement.corners.map((p,i)=>({ id: Date.now()+i, iconPath: dot, position: p, size: 0.3 }));
+      const icons = placement.corners.map((p,i)=>({ id: Date.now()+i, iconPath: GUIDE_ICON_PNG, position: p, size: 0.3 }));
       console.log("[TC 3D] anropar addIcon med:", icons);
       await tcApi.viewer.addIcon(icons);
       this._guideIcons = icons;
       console.log("[TC 3D] addIcon returnerade utan fel (inget kastat fel betyder INTE nödvändigtvis att punkterna syns — se konsolen ovan för exakt payload, och kolla 3D-vyn).");
       this._setNote3d('addIcon anropades utan fel (se webbläsarkonsolen, F12, för exakt vad som skickades). Syns INGA punkter ändå i 3D-vyn kan orsaken vara fel enhet på "size" '
-        + '(antagen meter), fel koordinatsystem för "position", eller att data:-URI:n som ikon inte stöds — berätta gärna vad du ser (eller inte ser) så justerar jag.');
+        + '(antagen meter) eller fel koordinatsystem för "position" — berätta gärna vad du ser (eller inte ser) så justerar jag.');
     }catch(err){
       console.warn("[TC 3D] addIcon kastade ett fel (guiden kunde inte visas). Fullt objekt:", err, "Nycklar:", err&&typeof err==="object"?Object.keys(err):null);
       this._setNote3d(`addIcon gav ett fel: "${describeError(err)}" (fullständigt objekt i konsolen, F12) — troligen skiljer sig PointIcon-formatet, eller så finns inte addIcon i den här TC-versionen. Resten av panelen funkar ändå.`);
@@ -3060,7 +3156,24 @@ class DrawingPreviewWidget{
   async _download3d(){
     const res = await this._recompute3d({ updateGuide:false });
     if(!res) return;
-    const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement);
+    let texture = null;
+    if(this.el.texture3d.checked){
+      const prevText = this.el.download3d.textContent;
+      this.el.download3d.disabled = true;
+      this.el.download3d.textContent = "Fångar bild…";
+      try{
+        const jpegBytes = await captureTextureJpeg(res.item, res.widthM, res.heightM);
+        texture = { jpegBytes };
+        console.log("[TC 3D] Textur fångad (nedladdning):", jpegBytes.length, "bytes JPEG.");
+      }catch(err){
+        console.warn("[TC 3D] Kunde inte fånga textur, laddar ner utan textur istället:", err);
+        this._setNote3d(`Kunde inte fånga bilden som textur ("${describeError(err)}") — laddade ner en grå platta utan textur istället.`);
+      }finally{
+        this.el.download3d.disabled = false;
+        this.el.download3d.textContent = prevText;
+      }
+    }
+    const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement, texture);
     const blob = new Blob([ifcText], { type:"application/x-step" });
     const baseName = (res.item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
     const url = URL.createObjectURL(blob);
@@ -3088,10 +3201,23 @@ class DrawingPreviewWidget{
     // ändå bara extra friktion — borttagen istället för buggfixad.
     this.el.upload3d.disabled = true;
     const prevText = this.el.upload3d.textContent;
+    let texture = null;
+    try{
+      if(this.el.texture3d.checked){
+        this.el.upload3d.textContent = "Fångar bild…";
+        const jpegBytes = await captureTextureJpeg(res.item, res.widthM, res.heightM);
+        texture = { jpegBytes };
+        console.log("[TC 3D] Textur fångad (uppladdning):", jpegBytes.length, "bytes JPEG.");
+      }
+    }catch(err){
+      console.warn("[TC 3D] Kunde inte fånga textur, laddar upp utan textur istället:", err);
+      this._setNote3d(`Kunde inte fånga bilden som textur ("${describeError(err)}") — laddar upp en grå platta utan textur istället.`);
+      texture = null;
+    }
     this.el.upload3d.textContent = "Laddar upp…";
     try{
-      const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement);
-      console.log("[TC 3D] IFC-text genererad, laddar upp…", { längd: ifcText.length });
+      const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement, texture);
+      console.log("[TC 3D] IFC-text genererad, laddar upp…", { längd: ifcText.length, medTextur: !!texture });
       const up = await createModelPlaneForAttachment(res.item, ifcText);
       console.log("[TC 3D] KLART:", up);
       alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}".\n\n`
@@ -3572,6 +3698,7 @@ class DrawingPreviewWidget{
       scaleVal3d: document.getElementById("dp-3d-scale-val"),
       guide3d: document.getElementById("dp-3d-guide"),
       guideUpdate3d: document.getElementById("dp-3d-guide-update"),
+      texture3d: document.getElementById("dp-3d-texture"),
       note3d: document.getElementById("dp-3d-note"),
       download3d: document.getElementById("dp-3d-download"),
       upload3d: document.getElementById("dp-3d-upload"),
