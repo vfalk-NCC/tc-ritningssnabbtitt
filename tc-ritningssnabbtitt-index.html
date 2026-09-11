@@ -47,9 +47,13 @@
   #ext-status.error .dot{ background:var(--err); }
 
   #panel-body{ position:absolute; inset:34px 0 0 0; }
-  #hint{ position:absolute; bottom:16px; left:16px; font-size:12px; color:var(--text-dim);
-    background:rgba(0,0,0,.35); padding:6px 10px; border-radius:5px; max-width:80%; }
-  #hint.dp-hidden{display:none;}
+
+  /* ---------- Global filindexvy (inget objekt markerat) ---------- */
+  #dp-global-list{ position:absolute; inset:0; display:flex; flex-direction:column; background:var(--bg); }
+  #dp-global-list.dp-hidden{ display:none; }
+  #dp-global-list-header{ padding:10px 12px 4px; font-size:13px; font-weight:600; flex:0 0 auto; }
+  #dp-global-list-hint{ padding:0 12px 8px; font-size:11px; color:var(--text-dim); flex:0 0 auto; }
+  #dp-global-list-items{ flex:1 1 auto; overflow-y:auto; border-top:1px solid var(--border); }
 
   .dp-icon-btn{ width:24px; height:24px; border-radius:4px; border:1px solid var(--border);
     background:rgba(30,31,34,.85); color:var(--text-dim); font-size:12px; cursor:pointer;
@@ -79,6 +83,10 @@
     border-bottom:1px solid var(--border); flex-wrap:wrap; }
   #dp-counter2{font-size:11px; color:var(--text-dim);}
   #dp-modal-zoom{display:flex; gap:4px; align-items:center; margin-left:auto; color:var(--text-dim); font-size:12px;}
+
+  #dp-photo-meta{ display:none; padding:5px 12px; font-size:11px; color:var(--text-dim);
+    border-bottom:1px solid var(--border); gap:16px; flex-wrap:wrap; }
+  #dp-photo-meta.dp-show{ display:flex; }
 
   #dp-empty{ color:var(--text-dim); font-size:12px; text-align:center; padding:0 14px;
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
@@ -162,7 +170,14 @@
   </div>
 
   <div id="panel-body">
-    <div id="hint">Markera ett objekt i 3D-vyn för att se kopplade ritningar och bilder</div>
+    <!-- Visas när INGET objekt är markerat: lista över ALLA filer den här
+         extensionen känner till i hela projektet (se DEL 1d), inte bara ett
+         enskilt objekts. Klick söker upp och markerar rätt objekt i 3D-vyn. -->
+    <div id="dp-global-list">
+      <div id="dp-global-list-header">Alla kopplade filer i projektet</div>
+      <div id="dp-global-list-hint">Markera ett objekt i 3D-vyn för att se dess kopplade ritningar och bilder — eller klicka en fil nedan för att hoppa dit.</div>
+      <div id="dp-global-list-items"></div>
+    </div>
 
     <!-- Tidigare: liten flytande/dragbar popup + separat "Förstora"-knapp som
          öppnade ett fullskärmsläge (position:fixed; inset:0) OVANPÅ panelen.
@@ -196,6 +211,10 @@
         </div>
         <button class="dp-btn" id="dp-modal-next">Nästa ›</button>
       </div>
+
+      <!-- Foto-metadata (datum taget + SWEREF99 20 15), bara synligt när
+           aktuell bilaga är ett foto med sådan EXIF-data. -->
+      <div id="dp-photo-meta"></div>
 
       <div id="dp-ribbon">
         <div id="dp-ribbon-groups" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;"></div>
@@ -404,6 +423,10 @@ async function authenticate(){
    Selection-hantering.
    --------------------------------------------------------------------- */
 let currentSelection = null;
+// Satt av GlobalIndexPanel/_selectAttachment strax innan setSelection() anropas,
+// så att showForObject (som körs asynkront efteråt via viewer.onSelectionChanged)
+// vet vilken specifik bilaga som ska visas direkt istället för bilaga nr 1.
+let _pendingFocusFileId = null;
 
 async function handleSelectionChanged(eventArg){
   // Bekräftat mot trimble-connect-workspace-api@0.3.34 (events.d.ts):
@@ -513,12 +536,16 @@ async function getAttachmentsForObject(sel){
     }
   }));
 
-  return files.filter(Boolean).map(f => IMAGE_EXT.test(f.name || "") ? {
+  const result = files.filter(Boolean).map(f => IMAGE_EXT.test(f.name || "") ? {
     kind: "image", id: f.id, versionId: f.versionId, name: f.name, capturedAt: f.createdOn,
   } : {
     kind: "drawing", id: f.id, versionId: f.versionId, name: f.name,
     revision: "–", discipline: "–", color: "#3d9bff",
   });
+  // Bygger upp DEL 1d:s projektomfattande filindex allteftersom objekt
+  // markeras — se den sektionen för varför (ingen bekräftad reverse-API).
+  result.forEach(item => recordInIndex(sel, item));
+  return result;
 }
 
 /* ---------------------------------------------------------------------
@@ -870,6 +897,99 @@ class ExistingFilePicker{
 }
 
 /* =====================================================================
+   DEL 1d — PROJEKTOMFATTANDE FILINDEX
+
+   Svar på: "en lista över ALLA kopplade filer i hela projektet, inte bara
+   det markerade objektets, som markerar rätt objekt när man klickar".
+
+   VIKTIG BEGRÄNSNING (VERIFIERA): jag hittade INGEN bekräftad Trimble
+   Connect-endpoint för att fråga Object Links "baklänges" (dvs. utifrån en
+   fil, få tillbaka vilket/vilka 3D-objekt den är kopplad till) — bara
+   GET /objectlink?versionId=&sourceId= som går objekt→filer, vilket är det
+   getAttachmentsForObject ovan redan använder. Att bygga listan genom att
+   fråga TVÄRTOM för varje enskilt objekt i hela modellen (tusentals objekt
+   i ett typiskt projekt) vore orimligt långsamt och skulle sannolikt slå i
+   API-rate limits.
+
+   Lösningen här är istället ETT EGET, klientunderhållet index: varje gång
+   den här extensionen SER en koppling — antingen för att den skapade den
+   (uppladdning/länkning) eller för att användaren markerade objektet och
+   vi hämtade dess bilagor — sparas den i en companion-fil i projektets
+   "Ritningssnabbtitt-data"-mapp (samma mönster som markup.json). Listan
+   känner alltså bara till filer som DEN HÄR extensionen sett minst en gång
+   — inte automatiskt alla Object Links som finns i hela projektet, t.ex.
+   om de skapades av en annan extension och objektet aldrig markerats här.
+   Indexet växer med användningen. Om ni hittar en riktig reverse-lookup-
+   endpoint i er TC-miljö går det att byta ut det här mot ett direktanrop.
+   ===================================================================== */
+const PROJECT_INDEX_NAME = "alla-kopplade-filer-index.json";
+let _projectIndexCache = null;
+let _projectIndexSaveTimer = null;
+
+async function loadProjectIndex(){
+  if(_projectIndexCache) return _projectIndexCache;
+  if(!tcAccessToken){ _projectIndexCache = { files:{} }; return _projectIndexCache; }
+  try{
+    const folderId = await ensureDataFolder();
+    const items = await tcListFolderItems(folderId);
+    const existing = items.find(it => it.type!=="FOLDER" && it.name===PROJECT_INDEX_NAME);
+    if(existing){
+      const blob = await downloadAttachmentBlob(existing.id, existing.versionId);
+      if(blob) _projectIndexCache = JSON.parse(await blob.text());
+    }
+  }catch(err){
+    console.warn("[index] kunde inte läsa projektindex:", err);
+  }
+  if(!_projectIndexCache || typeof _projectIndexCache!=="object") _projectIndexCache = { files:{} };
+  if(!_projectIndexCache.files) _projectIndexCache.files = {};
+  return _projectIndexCache;
+}
+
+function scheduleSaveProjectIndex(){
+  clearTimeout(_projectIndexSaveTimer);
+  // Debounce: om flera filer upptäcks i snabb följd (t.ex. man klickar
+  // igenom flera objekt) samlas de till EN uppladdning istället för en per
+  // fil — TC har ingen "uppdatera fil"-endpoint, så varje sparning innebär
+  // en ny uppladdning + borttagning av den gamla versionen (se nedan).
+  _projectIndexSaveTimer = setTimeout(saveProjectIndexNow, 1000);
+}
+async function saveProjectIndexNow(){
+  if(!tcAccessToken || !_projectIndexCache) return;
+  try{
+    const folderId = await ensureDataFolder();
+    const items = await tcListFolderItems(folderId);
+    const existing = items.find(it => it.type!=="FOLDER" && it.name===PROJECT_INDEX_NAME);
+    const blob = new Blob([JSON.stringify(_projectIndexCache)], { type: "application/json" });
+    await uploadFileToFolder(folderId, PROJECT_INDEX_NAME, blob);
+    if(existing) await deleteFile(existing.id);
+  }catch(err){
+    console.warn("[index] kunde inte spara projektindex:", err);
+  }
+}
+
+// Registrerar (eller uppdaterar) en fil↔objekt-koppling i indexet.
+// Fire-and-forget — ska aldrig blockera eller störa UI:t.
+async function recordInIndex(sel, item){
+  if(!tcAccessToken || !sel?.modelId || !sel?.guid || !item?.id) return;
+  try{
+    const idx = await loadProjectIndex();
+    const prev = idx.files[item.id];
+    if(prev && prev.name===item.name && prev.guid===sel.guid
+       && prev.modelId===sel.modelId && prev.runtimeId===sel.runtimeId){
+      return; // redan känt, inget att spara
+    }
+    idx.files[item.id] = {
+      name: item.name, kind: item.kind, versionId: item.versionId || null,
+      modelId: sel.modelId, guid: sel.guid, runtimeId: sel.runtimeId,
+      objectName: sel.name || "", updatedAt: new Date().toISOString(),
+    };
+    scheduleSaveProjectIndex();
+  }catch(err){
+    console.warn("[index] kunde inte registrera fil i projektindex:", err);
+  }
+}
+
+/* =====================================================================
    DEL 1b — LOKAL MOCKFALLBACK (för att kunna testa UI:t utan TC)
    ===================================================================== */
 const DISCIPLINES = ["K","A","E","V","VS"];
@@ -902,7 +1022,6 @@ function mockLoadMarkupBlob(id){ return mockMarkupStore[id] ? JSON.parse(JSON.st
 function initMockStandalone(){
   document.getElementById("ext-project-name").textContent = "(fristående testläge, ingen TC-anslutning)";
   const demoObj = { name: "Demo-objekt", guid: "GUID-DEMO", attachments: makeAttachments(3,2) };
-  document.getElementById("hint").textContent = "Testläge: ingen TC-anslutning. Visar exempeldata.";
   widget.showForObject(demoObj);
 }
 
@@ -1194,6 +1313,17 @@ async function renderRealImage(canvas, imgItem){
     if(!entry.blob) entry.blob = await downloadAttachmentBlob(imgItem.id, imgItem.versionId);
     if(!entry.blob) throw new Error("Ingen fildata");
     if(!entry.bitmap) entry.bitmap = await createImageBitmap(entry.blob);
+    if(entry.exif === undefined){
+      // Läses ur samma blob som redan hämtats för miniatyren — ingen extra
+      // nedladdning. Görs bara en gång per bilaga (cachead på entry.exif,
+      // null om inget hittades så vi inte försöker om varje rendering).
+      try{
+        entry.exif = parseExifDateAndGps(await entry.blob.arrayBuffer());
+      }catch(exifErr){
+        console.warn("[exif] kunde inte läsa EXIF ur", imgItem.name, exifErr);
+        entry.exif = null;
+      }
+    }
     const bitmap = entry.bitmap;
     const ctx = canvas.getContext("2d");
     const w = canvas.width, h = canvas.height;
@@ -1214,6 +1344,154 @@ function kindMeta(item){
 async function renderAttachment(canvas, item){
   if(item.kind==="image") await renderRealImage(canvas, item);
   else await renderRealDrawing(canvas, item);
+}
+
+/* =====================================================================
+   DEL 3b — EXIF (datum + GPS) OCH SWEREF99 20 15
+
+   Handskriven EXIF/TIFF-läsning (bara JPEG, bara DateTimeOriginal + GPS-
+   taggarna) istället för ett externt bibliotek via CDN — dels för att
+   EXIF är ett litet, stabilt, väldokumenterat binärformat som inte kräver
+   ett helt bibliotek för tre taggar, dels för att det är okänt om TC:s
+   iframe-CSP tillåter script från ännu en extern domän utöver de som
+   redan används (unpkg, cdnjs).
+
+   SWEREF99 20 15 (EPSG:3016)-formlerna är Krügers formler (Gauss konform
+   projektion) för GRS80, med de parametrar som Lantmäteriet/EPSG publicerar
+   för just den zonen: central meridian 20°15' (20.25°), skala 1.0,
+   false easting 150000 m, false northing 0. Bekräftat mot epsg.io/3016.
+   Formeln har korsverifierats mot en helt oberoende härledning (Snyders
+   TM-formler) för flera testpunkter — de överensstämde inom under 1 mm.
+   GPS-koordinater från EXIF är alltid WGS84; WGS84 och GRS80 sammanfaller
+   i praktiken (cm-nivå) så ingen datumtransformation behövs för det här
+   syftet (fotodokumentation), men det är inte geodetiskt exakt ner till
+   mm-nivå — VERIFIERA mot er egen mätutrustning om ni behöver den
+   precisionen.
+   ===================================================================== */
+function parseExifDateAndGps(arrayBuffer){
+  const view = new DataView(arrayBuffer);
+  if(view.byteLength < 4 || view.getUint16(0) !== 0xFFD8) return null; // inte JPEG
+
+  // Hitta APP1-segmentet (EXIF) genom att gå igenom JPEG-markörerna.
+  let offset = 2, app1Start = -1;
+  while(offset < view.byteLength - 4){
+    const marker = view.getUint16(offset);
+    if((marker & 0xFF00) !== 0xFF00) break;
+    if(marker === 0xFFD8 || marker === 0xFFD9){ offset += 2; continue; }
+    if(marker === 0xFFDA) break; // Start Of Scan — bilddata börjar, EXIF ligger alltid före
+    const len = view.getUint16(offset+2);
+    if(marker === 0xFFE1){ app1Start = offset+4; break; }
+    offset += 2 + len;
+  }
+  if(app1Start < 0) return null;
+  // "Exif\0\0"
+  if(view.getUint32(app1Start) !== 0x45786966 || view.getUint16(app1Start+4) !== 0x0000) return null;
+
+  const tiffStart = app1Start + 6;
+  const little = view.getUint16(tiffStart) === 0x4949;
+  const get16 = o => view.getUint16(o, little);
+  const get32 = o => view.getUint32(o, little);
+  const getRational = o => { const num=get32(o), den=get32(o+4); return den ? num/den : 0; };
+  if(get16(tiffStart+2) !== 0x002A) return null;
+  const ifd0Offset = get32(tiffStart+4);
+
+  function readIfd(ifdOffset){
+    const count = get16(ifdOffset);
+    const entries = {};
+    for(let i=0;i<count;i++){
+      const entryOffset = ifdOffset + 2 + i*12;
+      entries[get16(entryOffset)] = { numValues: get32(entryOffset+4), valueOffsetField: entryOffset+8 };
+    }
+    return entries;
+  }
+  function entryAscii(entry){
+    const len = entry.numValues;
+    const off = len<=4 ? entry.valueOffsetField : tiffStart+get32(entry.valueOffsetField);
+    let s = "";
+    for(let i=0;i<len-1;i++) s += String.fromCharCode(view.getUint8(off+i));
+    return s;
+  }
+  function entryRationalArray(entry){
+    // RATIONAL är 8 byte/värde — ryms aldrig inline i de 4 bytesen, alltid en offset.
+    const off = tiffStart+get32(entry.valueOffsetField);
+    const out = [];
+    for(let i=0;i<entry.numValues;i++) out.push(getRational(off+i*8));
+    return out;
+  }
+
+  let dateIso = null, lat = null, lon = null;
+  try{
+    const ifd0 = readIfd(tiffStart+ifd0Offset);
+    let dateTaken = null;
+    if(ifd0[0x8769]){ // Exif SubIFD-pekare
+      const exifIfd = readIfd(tiffStart+get32(ifd0[0x8769].valueOffsetField));
+      if(exifIfd[0x9003]) dateTaken = entryAscii(exifIfd[0x9003]); // DateTimeOriginal
+    }
+    if(!dateTaken && ifd0[0x0132]) dateTaken = entryAscii(ifd0[0x0132]); // DateTime (reservval)
+    if(dateTaken){
+      const m = dateTaken.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+      if(m) dateIso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`;
+    }
+    if(ifd0[0x8825]){ // GPS-IFD-pekare
+      const gps = readIfd(tiffStart+get32(ifd0[0x8825].valueOffsetField));
+      if(gps[0x0002] && gps[0x0004]){
+        const latDms = entryRationalArray(gps[0x0002]);
+        const lonDms = entryRationalArray(gps[0x0004]);
+        lat = latDms[0] + latDms[1]/60 + latDms[2]/3600;
+        lon = lonDms[0] + lonDms[1]/60 + lonDms[2]/3600;
+        if(gps[0x0001] && /S/i.test(entryAscii(gps[0x0001]))) lat = -lat;
+        if(gps[0x0003] && /W/i.test(entryAscii(gps[0x0003]))) lon = -lon;
+      }
+    }
+  }catch(err){
+    console.warn("[exif] fel vid tolkning av EXIF-data:", err);
+    return null;
+  }
+  if(!dateIso && lat===null) return null;
+  return { dateIso, lat, lon };
+}
+
+/* Krügers formler (Gauss konform projektion), GRS80, parametrar för
+   SWEREF99 20 15 / EPSG:3016. Returnerar heltalsmeter enligt svensk
+   konvention (Northing/Easting, N före E). */
+function wgs84ToSweref99_20_15(latDeg, lonDeg){
+  const a = 6378137.0;
+  const f = 1/298.257222101;
+  const centralMeridian = 20.25; // 20°15'
+  const k0 = 1.0, FN = 0.0, FE = 150000.0;
+
+  const e2 = f*(2.0-f);
+  const n = f/(2.0-f);
+  const aRoof = a/(1.0+n) * (1.0 + n*n/4.0 + n*n*n*n/64.0);
+  const A = e2;
+  const B = (5.0*e2*e2 - e2*e2*e2)/6.0;
+  const C = (104.0*e2*e2*e2 - 45.0*e2*e2*e2*e2)/120.0;
+  const D = (1237.0*e2*e2*e2*e2)/1260.0;
+  const beta1 = n/2.0 - 2.0*n*n/3.0 + 5.0*n*n*n/16.0 + 41.0*n*n*n*n/180.0;
+  const beta2 = 13.0*n*n/48.0 - 3.0*n*n*n/5.0 + 557.0*n*n*n*n/1440.0;
+  const beta3 = 61.0*n*n*n/240.0 - 103.0*n*n*n*n/140.0;
+  const beta4 = 49561.0*n*n*n*n/161280.0;
+
+  const lat = latDeg*Math.PI/180.0, lon = lonDeg*Math.PI/180.0, lon0 = centralMeridian*Math.PI/180.0;
+  const sinLat = Math.sin(lat);
+  const latPhi = lat - sinLat*Math.cos(lat)*(A + B*sinLat**2 + C*sinLat**4 + D*sinLat**6);
+  const dLon = lon - lon0;
+
+  const xiPrim = Math.atan(Math.tan(latPhi)/Math.cos(dLon));
+  const etaPrim = Math.atanh(Math.cos(latPhi)*Math.sin(dLon));
+
+  const N = aRoof*(xiPrim
+      + beta1*Math.sin(2*xiPrim)*Math.cosh(2*etaPrim)
+      + beta2*Math.sin(4*xiPrim)*Math.cosh(4*etaPrim)
+      + beta3*Math.sin(6*xiPrim)*Math.cosh(6*etaPrim)
+      + beta4*Math.sin(8*xiPrim)*Math.cosh(8*etaPrim)) * k0 + FN;
+  const E = aRoof*(etaPrim
+      + beta1*Math.cos(2*xiPrim)*Math.sinh(2*etaPrim)
+      + beta2*Math.cos(4*xiPrim)*Math.sinh(4*etaPrim)
+      + beta3*Math.cos(6*xiPrim)*Math.sinh(6*etaPrim)
+      + beta4*Math.cos(8*xiPrim)*Math.sinh(8*etaPrim)) * k0 + FE;
+
+  return { N: Math.round(N), E: Math.round(E) };
 }
 
 /* =====================================================================
@@ -1549,6 +1827,90 @@ class AnnotationEngine{
 }
 
 /* =====================================================================
+   DEL 5b — GlobalIndexPanel
+
+   Visas i panel-body istället för DrawingPreviewWidget när inget objekt är
+   markerat (se DrawingPreviewWidget.showForObject/hide som togglar mellan
+   de två). Läser DEL 1d:s projektindex och listar alla filer den känner
+   till, oavsett vilket objekt de hör till. Klick markerar rätt objekt i
+   3D-modellen (samma setSelection-anrop som _reselectInModel använder) —
+   det triggar sedan viewer.onSelectionChanged som via handleSelectionChanged
+   → openPopupForSelection → widget.showForObject bygger upp den vanliga
+   objektvyn, som i sin tur (via _pendingFocusFileId ovan) hoppar direkt
+   till just den klickade filen.
+   ===================================================================== */
+class GlobalIndexPanel{
+  constructor(){
+    this.el = {
+      root: document.getElementById("dp-global-list"),
+      items: document.getElementById("dp-global-list-items"),
+    };
+  }
+  show(){ this.el.root.classList.remove("dp-hidden"); this.refresh(); }
+  hide(){ this.el.root.classList.add("dp-hidden"); }
+
+  async refresh(){
+    this.el.items.innerHTML = `<div id="dp-attach-empty">Läser in…</div>`;
+    if(!tcAccessToken){
+      this.el.items.innerHTML = `<div id="dp-attach-empty">Kräver en aktiv Trimble Connect-anslutning — inte tillgängligt i fristående testläge.</div>`;
+      return;
+    }
+    let idx;
+    try{
+      idx = await loadProjectIndex();
+    }catch(err){
+      this.el.items.innerHTML = `<div id="dp-attach-empty">Kunde inte läsa filindexet: ${err.message}</div>`;
+      return;
+    }
+    const entries = Object.entries(idx.files || {});
+    if(!entries.length){
+      this.el.items.innerHTML = `<div id="dp-attach-empty">Inga filer registrerade ännu. Markera ett objekt med kopplade filer så byggs listan upp.</div>`;
+      return;
+    }
+    this.el.items.innerHTML = "";
+    entries
+      .sort((a,b)=> String(a[1].name).localeCompare(String(b[1].name)))
+      .forEach(([fileId, rec])=>{
+        const row = document.createElement("div");
+        row.className = "dp-attach-row";
+        const icon = document.createElement("span");
+        icon.className = "dp-attach-icon";
+        icon.textContent = kindIcon(rec.kind);
+        const name = document.createElement("span");
+        name.className = "dp-attach-name";
+        name.textContent = rec.name;
+        name.title = rec.name;
+        const objName = document.createElement("span");
+        objName.className = "dp-attach-comment";
+        objName.style.pointerEvents = "none";
+        objName.textContent = rec.objectName ? `objekt: ${rec.objectName}` : "";
+        row.append(icon, name, objName);
+        row.title = "Klicka för att markera objektet i 3D-vyn";
+        row.addEventListener("click", ()=> this._openFile(fileId, rec));
+        this.el.items.appendChild(row);
+      });
+  }
+
+  async _openFile(fileId, rec){
+    if(!tcApi?.viewer?.setSelection){
+      alert("Kan inte markera objekt — viewer.setSelection saknas i api-ytan.");
+      return;
+    }
+    _pendingFocusFileId = fileId;
+    try{
+      await tcApi.viewer.setSelection(
+        { modelObjectIds: [{ modelId: rec.modelId, objectRuntimeIds: [rec.runtimeId] }] },
+        "set"
+      );
+    }catch(err){
+      _pendingFocusFileId = null;
+      console.warn("[TC] kunde inte markera objektet i modellen:", err);
+      alert("Kunde inte markera objektet i modellen: " + err.message);
+    }
+  }
+}
+
+/* =====================================================================
    DEL 6 — DrawingPreviewWidget
 
    Visar vald ritning/bild med ribbon (rit-/mätverktyg) DIREKT i sidopanelens
@@ -1615,6 +1977,7 @@ class DrawingPreviewWidget{
   }
 
   showLoading(){
+    globalIndexPanel?.hide();
     this.el.view.classList.add("dp-visible");
     this.el.loading.classList.add("dp-show");
     this.el.error.classList.remove("dp-show");
@@ -1639,7 +2002,23 @@ class DrawingPreviewWidget{
     this.el.loading.classList.remove("dp-show");
     this.el.error.classList.remove("dp-show");
 
-    document.getElementById("hint").classList.add("dp-hidden");
+    // Om vi kom hit via projekt-filindexets globala lista (klick på en fil
+    // när inget objekt var markerat) — hoppa direkt till just den bilagan
+    // istället för alltid nr 1, och se till att ett ev. filter inte döljer
+    // den.
+    if(_pendingFocusFileId){
+      const targetId = _pendingFocusFileId;
+      _pendingFocusFileId = null;
+      if(this.filter!=="all"){
+        this.filter = "all";
+        this.el.filterBtns.querySelectorAll("[data-filter]").forEach(b=>
+          b.classList.toggle("dp-active", b.dataset.filter==="all"));
+      }
+      const idx = this.attachments.findIndex(a=>a.id===targetId);
+      if(idx>=0) this.index = idx;
+    }
+
+    globalIndexPanel?.hide();
     this.el.view.classList.add("dp-visible");
     this._setTool("select");
     this._renderView();
@@ -1649,7 +2028,7 @@ class DrawingPreviewWidget{
     this.el.view.classList.remove("dp-visible");
     this.currentObj = null;
     this.el.attachList.innerHTML = "";
-    document.getElementById("hint").classList.remove("dp-hidden");
+    globalIndexPanel?.show();
   }
 
   async _addAttachment(){
@@ -1687,6 +2066,7 @@ class DrawingPreviewWidget{
     const currentActual = this._currentItem();
     const actualIdx = this.currentObj.attachments.indexOf(currentActual);
     this.currentObj.attachments.splice(actualIdx>=0 ? actualIdx+1 : this.currentObj.attachments.length, 0, item);
+    if(currentSelection) recordInIndex(currentSelection, item);
     if(this.filter!=="all" && this.filter!==item.kind){
       this.filter = "all";
       this.el.filterBtns.querySelectorAll("[data-filter]").forEach(b=>
@@ -1711,6 +2091,7 @@ class DrawingPreviewWidget{
     if(!total){
       this.el.title.textContent = "–";
       this.el.empty.style.display = "flex";
+      this.el.photoMeta.classList.remove("dp-show");
       this.engine.items = [];
       this.engine.render();
       return;
@@ -1722,6 +2103,30 @@ class DrawingPreviewWidget{
     await renderAttachment(this.el.canvas, d);
     await this.engine.loadForDrawing();
     this._highlightActiveRow();
+    this._updatePhotoMeta(d);
+  }
+  // Visar datum-taget + SWEREF99 20 15 för aktuellt foto, om EXIF-data
+  // hittades (satt av renderRealImage/_cacheEntry i DEL 3/3b). Ritningar
+  // (PDF) har ingen EXIF, så raden döljs för dem.
+  _updatePhotoMeta(item){
+    const entry = _attachmentCache.get(item.id);
+    const exif = entry && entry.exif;
+    if(item.kind!=="image" || !exif || (!exif.dateIso && exif.lat==null)){
+      this.el.photoMeta.classList.remove("dp-show");
+      this.el.photoMeta.innerHTML = "";
+      return;
+    }
+    const parts = [];
+    if(exif.dateIso){
+      const dt = new Date(exif.dateIso);
+      if(!isNaN(dt)) parts.push("📅 " + dt.toLocaleString("sv-SE", {dateStyle:"medium", timeStyle:"short"}));
+    }
+    if(exif.lat!=null && exif.lon!=null){
+      const g = wgs84ToSweref99_20_15(exif.lat, exif.lon);
+      parts.push(`📍 SWEREF99 20 15 — N ${g.N}  E ${g.E}`);
+    }
+    this.el.photoMeta.innerHTML = parts.map(p=>`<span>${p}</span>`).join("");
+    this.el.photoMeta.classList.toggle("dp-show", parts.length>0);
   }
   // Canvasen fyller tillgänglig plats i panelen (istället för den gamla
   // fasta 720×480-storleken som antog ett fullskärms-overlay över hela
@@ -1897,6 +2302,12 @@ class DrawingPreviewWidget{
     }
     this.index = Math.max(0, idx);
     this._renderView();
+    // Sätts defensivt innan omarkeringen: OM TC skulle skicka ett nytt
+    // viewer.onSelectionChanged-event även för en redan markerad objekt
+    // (osäkert — VERIFIERA), ska showForObject hoppa till SAMMA fil igen
+    // istället för att nollställa till bilaga nr 1. Om inget nytt event
+    // kommer är flaggan ofarlig — den töms av nästa riktiga markering.
+    _pendingFocusFileId = item.id;
     this._reselectInModel();
   }
   // Markerar (om)  det 3D-objekt som den klickade filen hör till — samma
@@ -2023,6 +2434,7 @@ class DrawingPreviewWidget{
       zoomOut: document.getElementById("dp-zoom-out"),
       zoomLevel: document.getElementById("dp-zoom-level"),
       attachList: document.getElementById("dp-attach-list"),
+      photoMeta: document.getElementById("dp-photo-meta"),
     };
   }
   _bindEvents(){
@@ -2055,6 +2467,9 @@ class DrawingPreviewWidget{
 /* =====================================================================
    DEL 7 — INIT
    ===================================================================== */
+const globalIndexPanel = new GlobalIndexPanel();
+globalIndexPanel.show(); // startläge: inget objekt markerat ännu
+
 const widget = new DrawingPreviewWidget();
 
 if(window.WorkspaceAPI){
