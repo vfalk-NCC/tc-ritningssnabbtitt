@@ -299,6 +299,7 @@
         </div>
         <button class="dp-icon-btn" id="dp-link-existing" title="Länka en fil som redan finns i Trimble Connect (ingen uppladdning)">🔗</button>
         <button class="dp-icon-btn" id="dp-add-image" title="Bifoga fil (bild eller PDF-ritning) och koppla till objektet">📎</button>
+        <button class="dp-icon-btn" id="dp-add-3d" title="EXPERIMENTELLT: skapa en platta i verklig skala av den öppna ritningen/fotot och ladda upp till projektet, så du kan placera in den i 3D-vyn med Trimble Connects egna verktyg. Kräver att ritningen är kalibrerad.">🧊</button>
         <span id="dp-modal-save-flag">Sparat ✓</span>
       </div>
 
@@ -951,6 +952,189 @@ async function tcLinkExistingFile(sel, file){
     kind: "drawing", id: file.id, versionId: file.versionId, name: file.name,
     revision: "–", discipline: "–", color: "#3d9bff",
   };
+}
+
+/* =====================================================================
+   DEL 1e — "Lägg till i 3D-vy" (EXPERIMENTELL)
+
+   Bakgrund (se separat chattsvar): Trimble Connects extension-API
+   (ViewerAPI) ger INGET sätt att rita in en godtycklig texturerad yta
+   (t.ex. en PDF-sida) direkt i 3D-scenen på en fri position. Det finns
+   dock en inbyggd, FÄRDIG TC-funktion för det egentliga jobbet:
+   "Align 3D Models" / "Positionsinställningar" — där man tar en
+   uppladdad modell i projektet och manuellt flyttar/roterar/skalar den
+   i 3D-vyn (X/Y/höjd, X/Y/Z-rotation), och positionen sparas på TC:s
+   server. Se https://docs.3d.connect.trimble.com/models/aligning-3d-models
+
+   Vår del av jobbet blir därför: generera en RIKTIG 3D-modellfil av
+   ritningen/fotot i EXAKT rätt verklig storlek (utifrån skalan som
+   redan sätts med verktyget "Kalibrera") och ladda upp den till
+   projektet — sedan gör du själv sista steget (placera/rotera) med
+   TC:s egna, betydligt kraftfullare 3D-align-verktyg.
+
+   Filformat: TC konverterar bara vissa 3D-format automatiskt (IFC, DWG,
+   SKP, Revit m.fl. — INTE glTF/OBJ, se
+   https://help.trimble.com/en/trimble-connect/trimble-connect/connect-for-browsers-3d-viewer/getting-started-in-the-3d-viewer/supported-file-formats).
+   IFC är öppet och textbaserat (går att skriva rakt av i JS, ingen
+   extern SDK behövs) så det är vad vi genererar: en enkel, tunn
+   (5 mm) rektangulär platta i verklig bredd/höjd, centrerad i
+   modellens origo. INGEN bildtextur ännu — det kräver IFC-funktioner
+   (IfcImageTexture/IfcBlobTexture) vars stöd i Trimble Connects egen
+   IFC-konvertering INTE gick att bekräfta mot officiell dokumentation.
+   Plattan är alltså en osynlig/enfärgad "sann storlek"-platta att rikta
+   in — själva ritningen tittar man fortsatt på här i panelen (klicka på
+   plattan i 3D när den är utplacerad, så öppnas den precis som för
+   vilket annat kopplat objekt som helst, via samma 📎-koppling).
+
+   Den här koden är INTE testad mot en riktig Trimble Connect-miljö än
+   (kan inte göras härifrån) — bara verifierad offline: refererade
+   #nummer finns alla definierade, inga dubbletter, parenteser balanserade,
+   GUID:er har rätt längd/teckenuppsättning. Testa gärna i er egen miljö
+   och hör av er om något inte stämmer.
+   ===================================================================== */
+
+const IFC_GUID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+function newIfcGuid(){
+  let s = "";
+  for(let i=0;i<22;i++) s += IFC_GUID_CHARS[Math.floor(Math.random()*64)];
+  return s;
+}
+/* STEP REAL-literaler MÅSTE innehålla en decimalpunkt (t.ex. "1." inte "1"). */
+function ifcReal(n){
+  if(!isFinite(n)) n = 0;
+  let s = n.toFixed(6).replace(/0+$/,"");
+  if(s.endsWith(".")) s += "0";
+  if(!s.includes(".")) s += ".0";
+  return s;
+}
+function ifcStr(s){
+  return String(s==null?"":s).replace(/'/g,"''").replace(/[\r\n\t]/g," ").slice(0,255);
+}
+
+/* Omvandlar kalibreringens enhet till meter (IFC-filen deklareras alltid
+   i meter). Stödjer bara metriska enheter — rimligt för svenska
+   byggritningar. Okänd enhet => null (anroparen får fråga användaren). */
+const IFC_UNIT_TO_METERS = { mm:0.001, cm:0.01, dm:0.1, m:1, km:1000 };
+
+/* Bygger en fristående, självbärande IFC4-fil (en enda .ifc-textfil, inga
+   externa resurser) med EN tunn rektangulär platta i verklig storlek,
+   centrerad i modellens origo (0,0,0), liggande plant (som ett planritning
+   ovanpå marken) — vrid/flytta/skala in den mot resten av modellen med
+   Trimble Connects egna "Positionsinställningar" efter uppladdning. */
+function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.005 }){
+  const hw = ifcReal(widthM/2), hh = ifcReal(heightM/2), th = ifcReal(thicknessM);
+  const gProject=newIfcGuid(), gSite=newIfcGuid(), gBuilding=newIfcGuid(), gStorey=newIfcGuid(),
+        gAggPS=newIfcGuid(), gAggSB=newIfcGuid(), gAggBS=newIfcGuid(), gProxy=newIfcGuid(), gContains=newIfcGuid();
+  const nm = ifcStr(name || "Ritning");
+  const desc = ifcStr(description || "");
+  const nowTs = Math.floor(Date.now()/1000);
+
+  return [
+    "ISO-10303-21;",
+    "HEADER;",
+    "FILE_DESCRIPTION((''),'2;1');",
+    `FILE_NAME('${nm}.ifc','${new Date().toISOString()}',(''),(''),'Quick viewer by VFA - IFC-platta v1','Quick viewer by VFA','');`,
+    "FILE_SCHEMA(('IFC4'));",
+    "ENDSEC;",
+    "DATA;",
+    `#1=IFCPERSON($,$,$,$,$,$,$,$);`,
+    `#2=IFCORGANIZATION($,'Quick viewer by VFA',$,$,$);`,
+    `#3=IFCPERSONANDORGANIZATION(#1,#2,$);`,
+    `#4=IFCAPPLICATION(#2,'1.0','Quick viewer by VFA','QVFA');`,
+    `#5=IFCOWNERHISTORY(#3,#4,$,.ADDED.,$,$,$,${nowTs});`,
+    `#6=IFCDIRECTION((1.,0.,0.));`,
+    `#7=IFCDIRECTION((0.,0.,1.));`,
+    `#8=IFCCARTESIANPOINT((0.,0.,0.));`,
+    `#9=IFCAXIS2PLACEMENT3D(#8,#7,#6);`,
+    `#11=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-5,#9,$);`,
+    `#12=IFCUNITASSIGNMENT((#13,#14,#15));`,
+    `#13=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);`,
+    `#14=IFCSIUNIT(*,.AREAUNIT.,$,.SQUARE_METRE.);`,
+    `#15=IFCSIUNIT(*,.VOLUMEUNIT.,$,.CUBIC_METRE.);`,
+    `#16=IFCPROJECT('${gProject}',#5,'Quick viewer by VFA - placering',$,$,$,$,(#11),#12);`,
+    `#22=IFCLOCALPLACEMENT($,#9);`,
+    `#23=IFCSITE('${gSite}',#5,'Site',$,$,#22,$,$,.ELEMENT.,$,$,$,$,$);`,
+    `#24=IFCLOCALPLACEMENT(#22,#9);`,
+    `#25=IFCBUILDING('${gBuilding}',#5,'Building',$,$,#24,$,$,.ELEMENT.,$,$,$);`,
+    `#26=IFCLOCALPLACEMENT(#24,#9);`,
+    `#27=IFCBUILDINGSTOREY('${gStorey}',#5,'Storey',$,$,#26,$,$,.ELEMENT.,0.);`,
+    `#30=IFCRELAGGREGATES('${gAggPS}',#5,$,$,#16,(#23));`,
+    `#31=IFCRELAGGREGATES('${gAggSB}',#5,$,$,#23,(#25));`,
+    `#32=IFCRELAGGREGATES('${gAggBS}',#5,$,$,#25,(#27));`,
+    `#40=IFCCARTESIANPOINT((-${hw},-${hh}));`,
+    `#41=IFCCARTESIANPOINT((${hw},-${hh}));`,
+    `#42=IFCCARTESIANPOINT((${hw},${hh}));`,
+    `#43=IFCCARTESIANPOINT((-${hw},${hh}));`,
+    `#44=IFCCARTESIANPOINT((-${hw},-${hh}));`,
+    `#45=IFCPOLYLINE((#40,#41,#42,#43,#44));`,
+    `#46=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#45);`,
+    `#48=IFCEXTRUDEDAREASOLID(#46,#9,#7,${th});`,
+    `#49=IFCSHAPEREPRESENTATION(#11,'Body','SweptSolid',(#48));`,
+    `#50=IFCPRODUCTDEFINITIONSHAPE($,$,(#49));`,
+    `#51=IFCLOCALPLACEMENT(#26,#9);`,
+    `#52=IFCBUILDINGELEMENTPROXY('${gProxy}',#5,'${nm}','${desc}',$,#51,#50,$,$);`,
+    `#53=IFCRELCONTAINEDINSPATIALSTRUCTURE('${gContains}',#5,$,$,(#52),#27);`,
+    "ENDSEC;",
+    "END-ISO-10303-21;",
+  ].join("\n");
+}
+
+/* Egen, synlig mapp (skild från den dolda "Ritningssnabbtitt-data" som
+   bara innehåller appens interna companion-filer) — hit laddas de
+   genererade IFC-plattorna upp, så att de är lätta att hitta i Trimble
+   Connects vanliga filträd och lägga till som modell. */
+const TC_PLACEMENTS_FOLDER_NAME = "Ritningssnabbtitt-3D-placeringar";
+let _placementsFolderIdCache = null;
+let _placementsFolderIdCacheProjectId = null;
+async function ensurePlacementsFolder(){
+  const projectId = tcProject?.id;
+  if(!projectId) throw new Error("Inget projekt-id — kan inte hitta/skapa mappen för 3D-placeringar.");
+  if(_placementsFolderIdCache && _placementsFolderIdCacheProjectId === projectId) return _placementsFolderIdCache;
+
+  const rootId = await getProjectRootId();
+  const items = await tcFetchJson(`/folders/${rootId}/items`);
+  const list = Array.isArray(items) ? items : items?.items || [];
+  const existing = list.find(it => it.type === "FOLDER" && it.name === TC_PLACEMENTS_FOLDER_NAME);
+  if(existing){
+    _placementsFolderIdCache = existing.id;
+    _placementsFolderIdCacheProjectId = projectId;
+    return existing.id;
+  }
+  const res = await fetch(tcApiUrl(`/folders`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: TC_PLACEMENTS_FOLDER_NAME, parentId: rootId }),
+  });
+  if(!res.ok) throw new Error(`Kunde inte skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}" (${res.status})`);
+  const folder = await res.json();
+  _placementsFolderIdCache = folder.id;
+  _placementsFolderIdCacheProjectId = projectId;
+  return folder.id;
+}
+
+/* Genererar en IFC-platta i verklig skala för given bilaga (utifrån dess
+   kalibrering) och laddar upp den till TC_PLACEMENTS_FOLDER_NAME. Kastar
+   fel med ett användarvänligt meddelande om något saknas. */
+async function createModelPlaneForAttachment(item, scale, canvasW, canvasH){
+  if(!tcAccessToken) throw new Error("Kräver en aktiv Trimble Connect-anslutning.");
+  if(!scale || !scale.pxPerUnit) throw new Error('Ritningen/fotot är inte kalibrerat än. Använd verktyget "Kalibrera" först, så att verklig storlek är känd.');
+  const factor = IFC_UNIT_TO_METERS[scale.unit];
+  if(!factor) throw new Error(`Okänd enhet "${scale.unit}" på kalibreringen — stödjer bara mm, cm, dm, m, km.`);
+  const widthM = (canvasW/scale.pxPerUnit) * factor;
+  const heightM = (canvasH/scale.pxPerUnit) * factor;
+  if(!(widthM>0) || !(heightM>0)) throw new Error("Kunde inte räkna ut en giltig storlek (bredd/höjd blev 0).");
+
+  const description = `Genererad platta för "${item.name}". Verklig storlek: ${widthM.toFixed(2)} × ${heightM.toFixed(2)} m. `
+    + `Skapad av Quick viewer by VFA ${new Date().toLocaleDateString("sv-SE")}. Placera/rotera/skala in den mot modellen med `
+    + `Trimble Connects "Positionsinställningar" (Align 3D Models).`;
+  const ifcText = buildIfcPlaneFile({ widthM, heightM, name: item.name, description });
+  const blob = new Blob([ifcText], { type: "application/x-step" });
+  const baseName = (item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
+  const filename = `${baseName} - 3D-platta.ifc`;
+
+  const folderId = await ensurePlacementsFolder();
+  const { fileId, versionId } = await uploadFileToFolder(folderId, filename, blob);
+  return { fileId, versionId, filename, widthM, heightM };
 }
 
 /* Enkel mappbläddrare som popup-panel. onPick(file) anropas när användaren
@@ -2551,6 +2735,58 @@ class DrawingPreviewWidget{
     }
   }
 
+  // EXPERIMENTELLT (DEL 1e): genererar en IFC-platta i verklig skala av
+  // den ÖPPNA ritningen/fotot (utifrån dess kalibrering) och laddar upp
+  // den till projektet. Placerar INTE ut den automatiskt i 3D-vyn — det
+  // sista steget (flytta/rotera/skala) görs med Trimble Connects egna
+  // "Positionsinställningar" (Models-panelen ▸ ⋮ ▸ Position settings),
+  // se kommentaren vid buildIfcPlaneFile ovan för varför.
+  async _addToModel(){
+    const item = this._currentItem();
+    if(!item) return;
+    if(!tcAccessToken){
+      alert("Den här funktionen kräver en aktiv Trimble Connect-anslutning (fungerar inte i testläge).");
+      return;
+    }
+    const scale = this.engine.scale;
+    if(!scale || !scale.pxPerUnit){
+      alert('Ritningen/fotot är inte kalibrerat. Använd verktyget "Kalibrera" i verktygsraden först, så att verklig storlek är känd — sedan går det att skapa en 3D-platta i rätt skala.');
+      return;
+    }
+    const canvasW = this.el.canvas.width, canvasH = this.el.canvas.height;
+    const factorPreview = IFC_UNIT_TO_METERS[scale.unit];
+    if(!factorPreview){
+      alert(`Okänd enhet "${scale.unit}" på kalibreringen — stödjer just nu bara mm, cm, dm, m eller km. Kalibrera om med en av dessa enheter.`);
+      return;
+    }
+    const wPreview = (canvasW/scale.pxPerUnit)*factorPreview, hPreview = (canvasH/scale.pxPerUnit)*factorPreview;
+    const ok = window.confirm(
+      `Skapa en 3D-platta (${wPreview.toFixed(2)} × ${hPreview.toFixed(2)} m) av "${item.name}" och ladda upp den till mappen `
+      + `"${TC_PLACEMENTS_FOLDER_NAME}" i projektet?\n\n`
+      + `EXPERIMENTELL FUNKTION — testad offline men inte mot en riktig Trimble Connect-miljö än.\n\n`
+      + `Efter uppladdning, i Trimble Connect: öppna Modeller-panelen, lägg till den nya filen som modell om den inte redan syns, `
+      + `markera den och välj "Positionsinställningar" för att flytta/rotera/skala in den mot resten av modellen. `
+      + `Klicka sedan på plattan i 3D — den öppnas här precis som vilket annat kopplat objekt som helst.`
+    );
+    if(!ok) return;
+
+    this.el.add3d.disabled = true;
+    const prevTitle = this.el.add3d.title;
+    this.el.add3d.title = "Skapar och laddar upp…";
+    try{
+      const res = await createModelPlaneForAttachment(item, scale, canvasW, canvasH);
+      alert(`Klart! "${res.filename}" (${res.widthM.toFixed(2)} × ${res.heightM.toFixed(2)} m) laddades upp till mappen `
+        + `"${TC_PLACEMENTS_FOLDER_NAME}".\n\nNästa steg i Trimble Connect: Modeller-panelen ▸ lägg till filen som modell om den inte redan syns `
+        + `▸ markera den ▸ "Positionsinställningar" för att placera in den mot modellen.`);
+    }catch(err){
+      console.error("[TC] kunde inte skapa/ladda upp 3D-platta:", err);
+      alert("Kunde inte skapa 3D-plattan: " + err.message);
+    }finally{
+      this.el.add3d.disabled = false;
+      this.el.add3d.title = prevTitle;
+    }
+  }
+
   // Lägger till en nykopplad bilaga (uppladdad ELLER länkad från befintligt
   // TC-innehåll) i listan och visar den, oavsett aktivt filter.
   _insertAttachment(item){
@@ -2959,6 +3195,7 @@ class DrawingPreviewWidget{
       filterBtns: document.getElementById("dp-thumb-filter"),
       addImage: document.getElementById("dp-add-image"),
       linkExisting: document.getElementById("dp-link-existing"),
+      add3d: document.getElementById("dp-add-3d"),
       saveFlag: document.getElementById("dp-modal-save-flag"),
       empty: document.getElementById("dp-empty"),
       loading: document.getElementById("dp-loading"),
@@ -2988,6 +3225,7 @@ class DrawingPreviewWidget{
     this.el.next.addEventListener("click", e=>{e.stopPropagation(); this._goNext();});
     this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addAttachment();});
     this.el.linkExisting.addEventListener("click", e=>{e.stopPropagation(); this.filePicker.open();});
+    this.el.add3d.addEventListener("click", e=>{e.stopPropagation(); this._addToModel();});
     this.el.fileInput.addEventListener("change", e=>{
       const file = e.target.files?.[0];
       this._onFileChosen(file);
