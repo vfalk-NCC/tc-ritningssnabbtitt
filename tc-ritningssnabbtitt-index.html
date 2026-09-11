@@ -403,19 +403,29 @@
           <button class="dp-btn" id="dp-3d-guide-update">↻ Uppdatera guide i 3D-vyn</button>
         </div>
         <div class="dp-3d-row">
-          <label><input type="checkbox" id="dp-3d-pointcloud"> ☁ Skapa som punktmoln istället — visar bilden i färg (bekräftat fungerande metod)</label>
+          <label style="flex:1 1 100%;">3D-läge:
+            <select id="dp-3d-mode">
+              <option value="ifc" selected>◻ Grå platta (IFC) — enklast, testat och bekräftat fungerande</option>
+              <option value="pointcloud">☁ Punktmoln (LAS) — visar bilden i färg, bekräftat fungerande</option>
+              <option value="vector">✎ Vektorlinjer (DXF) — skarpa linjer/text från PDF:en, NYTT och OTESTAT mot riktig TC-miljö</option>
+            </select>
+          </label>
         </div>
         <div id="dp-3d-note">
           Guiden ritas som fyra hörnpunkter i 3D-vyn (inte den riktiga ritningsbilden — Trimbles API kan inte rendera
           bilder live) så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är
           bounding-boxen för objektet du har markerat i 3D — flytta/rotera det markerade objektet om ankaret hamnar fel.
           Storleken (bredd/höjd) kommer från kalibreringen (verktyget "Kalibrera"). Efter uppladdning kan du finjustera
-          ytterligare med Trimble Connects egna "Positionsinställningar" i Modeller-panelen.
-          <b>Experimentellt</b> — testat offline, inte mot en riktig Trimble Connect-miljö än.
-          Kryssrutan <b>"Skapa som punktmoln istället"</b> genererar en .las-fil (punktmoln) där varje punkt har samma
-          färg som motsvarande pixel i ritningen/fotot, istället för en enfärgad grå platta — denna metod är TESTAD och
-          BEKRÄFTAD att fungera i en riktig Trimble Connect-miljö (ett testmönster med fyra färgfält visades korrekt).
-          Låt den vara AVKRYSSAD om du bara vill ha den ursprungliga, enkla grå plattan.
+          ytterligare med Trimble Connects egna "Positionsinställningar" i Modeller-panelen.<br><br>
+          <b>Grå platta (IFC)</b> — den ursprungliga, enkla metoden: en enfärgad platta utan bild.<br>
+          <b>Punktmoln (LAS)</b> — TESTAD och BEKRÄFTAD i en riktig Trimble Connect-miljö (ett testmönster visades med
+          korrekta färger). Varje pixel i ritningen/fotot blir en egen punkt i rymden — funkar för foton, men kan se
+          "kornigt"/halvtonat ut för finstreckade tekniska ritningar.<br>
+          <b>Vektorlinjer (DXF)</b> — NYTT (2026-09-11), plockar ut de riktiga linjerna och texten ur PDF:en istället för
+          att rastrera den till punkter, vilket ger mycket skarpare resultat för CAD-ritningar. Kräver att ritningen är
+          en riktig vektor-PDF (inte ett foto/skannat dokument) — fungerar inte på bilagor av typen "foto". Linjegeometrin
+          är validerad offline mot en riktig ritning (visuell jämförelse), men själva DXF-filen är INTE ännu testad mot en
+          riktig Trimble Connect-miljö.
         </div>
         <div class="dp-3d-row dp-3d-actions">
           <button class="dp-btn" id="dp-3d-download">⬇ Ladda ner IFC</button>
@@ -1655,6 +1665,329 @@ async function createPointCloudForAttachment(item, lasBytes){
     console.log("[TC 3D] uppladdning OK (punktmoln):", { fileId, versionId });
   }catch(err){
     console.error("[TC 3D] STEG 2 (själva filöverföringen, punktmoln) misslyckades. Fullt objekt:", err);
+    throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${describeError(err)}`);
+  }
+  return { fileId, versionId, filename };
+}
+
+/* =====================================================================
+   VEKTORLINJER (.dxf) — plockar ut de RIKTIGA linjerna/texten ur en
+   vektor-PDF (pdf.js "operatorList", samma interna data som pdf.js
+   använder för att rita på canvas) istället för att rastrera ritningen
+   till punkter/pixlar. Löser "halvtons"-problemet punktmolnet fick på
+   finstreckade tekniska ritningar (bekräftat av användaren 2026-09-11).
+
+   Byggd och validerad OFFLINE (Node-prototyp) mot en riktig ritning från
+   användaren: 16 255 linjesegment + 345 textrader extraherades korrekt,
+   renderades om till en bild och jämfördes visuellt mot originalet —
+   skarpt, rätt placerat, rätt roterad text. DXF-utskriften (LINE i
+   världskoordinater rakt av + TEXT via AutoCADs "Arbitrary Axis
+   Algorithm" för OCS-orientering på lutade/roterade plattor) validerades
+   separat genom att tolka tillbaka den egna DXF-filen och jämföra mot
+   indata — även det bekräftat korrekt, inklusive en lutad (90°) testplatta.
+
+   VIKTIGT (ärlig risknotering): page.getOperatorList()s exakta interna
+   argumentformat är INTE en officiellt dokumenterad del av pdf.js publika
+   API — det är validerat mot den pdf.js-version som faktiskt kördes vid
+   testet, inte den CDN-version appen laddar (se OPS-konstanter + den
+   defensiva formdetekteringen nedan, som är tänkt att tåla små skillnader
+   mellan versioner utan att krascha eller ge tyst fel geometri). Själva
+   DXF-uppladdningen är INTE testad mot en riktig Trimble Connect-miljö än.
+   ===================================================================== */
+
+/* AutoCADs "Arbitrary Axis Algorithm" — räknar ut vilka två axlar (Ax,Ay)
+   AutoCAD/DXF-läsare använder som lokalt koordinatsystem ("OCS") för en
+   TEXT-entitet med en given extrusionsriktning/normal N. Det här är EN
+   AV DXF-FORMATETS EGNA fasta regler (oberoende av vår egen refDir) —
+   se DXF-referensens avsnitt om OCS. Nästan-vertikala normaler (|N.x| och
+   |N.y| båda < 1/64) använder världens Y-axel istället för Z i korset,
+   annars blir Ax odefinierad/instabil (nästan parallella vektorer). */
+function computeOcsBasis(N){
+  const WorldZ = {x:0,y:0,z:1}, WorldY = {x:0,y:1,z:0};
+  const Ax = (Math.abs(N.x) < 1/64 && Math.abs(N.y) < 1/64)
+    ? vNorm(vCross(WorldY, N))
+    : vNorm(vCross(WorldZ, N));
+  const Ay = vNorm(vCross(N, Ax));
+  return { Ax, Ay };
+}
+
+function dxfPair(code, value){ return `${code}\n${value}\n`; }
+function dxfNum(n){ return (isFinite(n) ? n : 0).toFixed(4); }
+
+/* pdf.js "DrawOPS"-koderna som constructPath packar sina koordinater med
+   (moveTo/lineTo/closePath/curveTo/quadraticCurveTo) — samma variabel-
+   stegs-kodning som page.render() själv läser för att rita på canvas. */
+const _PDF_DRAW_OPS = { moveTo:0, lineTo:1, curveTo:2, quadraticCurveTo:3, closePath:4 };
+
+/* Går igenom en sidas operatorList och bygger upp linjesegment (redan i
+   PDF-sidrymd/punkter, INTE canvas-pixlar) + textrader med position/
+   rotation/höjd, genom att själv hålla reda på samma grafik-tillstånd
+   (CTM, text-matriser, sparad/återställd stack) som pdf.js interna
+   canvas-renderare gör. Använder pdfjsLib.OPS NAMNGIVNA konstanter
+   (stabil, exporterad del av API:t) istället för hårdkodade nummer, och
+   känner defensivt av de argumentformer som faktiskt observerats — om
+   ett enstaka anrop inte känns igen hoppas det bara över (räknas i
+   "skipped", loggas) istället för att krascha eller ge fel geometri. */
+function extractPdfVectors(opList, viewBox, OPS){
+  const IDENT = [1,0,0,1,0,0];
+  function matMul(m1, m2){ // tillämpa m1 först, sen m2
+    return [
+      m1[0]*m2[0] + m1[1]*m2[2], m1[0]*m2[1] + m1[1]*m2[3],
+      m1[2]*m2[0] + m1[3]*m2[2], m1[2]*m2[1] + m1[3]*m2[3],
+      m1[4]*m2[0] + m1[5]*m2[2] + m2[4], m1[4]*m2[1] + m1[5]*m2[3] + m2[5],
+    ];
+  }
+  function apply(m, x, y){ return [ m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5] ]; }
+
+  const lineSegments = [];
+  const textRuns = [];
+  let ctm = IDENT;
+  const stack = [];
+  let tm = IDENT, tlm = IDENT, fontSize = 1;
+  const skipped = { constructPath:0, setTextMatrix:0, showText:0, other:0 };
+
+  function flattenPathToSegments(coords, ctmAtDraw){
+    let cx=0, cy=0, sx=0, sy=0, i=0;
+    const segs = [];
+    function lineToDevice(x1,y1,x2,y2){
+      const [dx1,dy1] = apply(ctmAtDraw, x1,y1);
+      const [dx2,dy2] = apply(ctmAtDraw, x2,y2);
+      if(isFinite(dx1)&&isFinite(dy1)&&isFinite(dx2)&&isFinite(dy2)) segs.push({x1:dx1,y1:dy1,x2:dx2,y2:dy2});
+    }
+    function flattenCubic(x0,y0,x1,y1,x2,y2,x3,y3,steps=8){
+      let px=x0, py=y0;
+      for(let s=1; s<=steps; s++){
+        const t=s/steps, mt=1-t;
+        const bx = mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3;
+        const by = mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3;
+        lineToDevice(px,py,bx,by); px=bx; py=by;
+      }
+    }
+    function flattenQuad(x0,y0,x1,y1,x2,y2,steps=6){
+      let px=x0, py=y0;
+      for(let s=1; s<=steps; s++){
+        const t=s/steps, mt=1-t;
+        const bx = mt*mt*x0 + 2*mt*t*x1 + t*t*x2;
+        const by = mt*mt*y0 + 2*mt*t*y1 + t*t*y2;
+        lineToDevice(px,py,bx,by); px=bx; py=by;
+      }
+    }
+    try{
+      while(i < coords.length){
+        const code = coords[i++];
+        if(code===_PDF_DRAW_OPS.moveTo){ cx=coords[i++]; cy=coords[i++]; sx=cx; sy=cy; }
+        else if(code===_PDF_DRAW_OPS.lineTo){ const x=coords[i++], y=coords[i++]; lineToDevice(cx,cy,x,y); cx=x; cy=y; }
+        else if(code===_PDF_DRAW_OPS.curveTo){ const x1=coords[i++],y1=coords[i++],x2=coords[i++],y2=coords[i++],x3=coords[i++],y3=coords[i++]; flattenCubic(cx,cy,x1,y1,x2,y2,x3,y3); cx=x3; cy=y3; }
+        else if(code===_PDF_DRAW_OPS.quadraticCurveTo){ const x1=coords[i++],y1=coords[i++],x2=coords[i++],y2=coords[i++]; flattenQuad(cx,cy,x1,y1,x2,y2); cx=x2; cy=y2; }
+        else if(code===_PDF_DRAW_OPS.closePath){ lineToDevice(cx,cy,sx,sy); cx=sx; cy=sy; }
+        else { break; } // okänd delkod — avbryt den här delvägen, behåll det vi redan hunnit platta ut
+      }
+    }catch(e){ /* trasig koordinatlista — behåll det som redan plattats ut */ }
+    return segs;
+  }
+
+  for(let idx=0; idx<opList.fnArray.length; idx++){
+    const fn = opList.fnArray[idx];
+    const args = opList.argsArray[idx];
+    try{
+      if(fn === OPS.save){ stack.push({ctm, tm, tlm, fontSize}); }
+      else if(fn === OPS.restore){ const s = stack.pop(); if(s){ ctm=s.ctm; tm=s.tm; tlm=s.tlm; fontSize=s.fontSize; } }
+      else if(fn === OPS.transform){ ctm = matMul(Array.from(args), ctm); }
+      else if(fn === OPS.constructPath){
+        // Observerad form: args = [ fnKodLista, [Float32Array koordinater], bboxLista ]
+        // — args[1] är ett 1-element "omslag" vars [0] är själva koordinat-
+        // listan. Känner defensivt av en plattare [ fnKodLista, Float32Array,
+        // bboxLista ]-form också, ifall en annan pdf.js-version hoppar
+        // över omslaget.
+        let coords = null;
+        const wrapped = Array.isArray(args) && args.length>=2 ? args[1] : null;
+        if(wrapped && typeof wrapped.length === "number" && wrapped.length>0 && wrapped[0] && typeof wrapped[0].length === "number"){
+          coords = wrapped[0];
+        } else if(wrapped && typeof wrapped.length === "number" && typeof wrapped[0] === "number"){
+          coords = wrapped;
+        }
+        if(coords){ lineSegments.push(...flattenPathToSegments(coords, ctm)); }
+        else skipped.constructPath++;
+      }
+      else if(fn === OPS.beginText){ tm = IDENT; tlm = IDENT; }
+      else if(fn === OPS.endText){ /* inget att göra */ }
+      else if(fn === OPS.setTextMatrix){
+        // Observerad form: args = [Float32Array(6)] (ETT element som SLÅR IN
+        // hela matrisen). Känner defensivt av en flat [a,b,c,d,e,f]-form också.
+        if(args && args.length===1 && args[0] && typeof args[0].length==="number" && args[0].length>=6){
+          tm = Array.from(args[0]).slice(0,6); tlm = tm.slice();
+        } else if(args && args.length>=6){
+          tm = Array.from(args).slice(0,6); tlm = tm.slice();
+        } else skipped.setTextMatrix++;
+      }
+      else if(fn === OPS.moveText){
+        const tx = args[0], ty = args[1];
+        if(isFinite(tx) && isFinite(ty)){ tlm = matMul([1,0,0,1,tx,ty], tlm); tm = tlm.slice(); }
+      }
+      else if(fn === OPS.setFont){ const sz = args[1]; if(isFinite(sz)) fontSize = sz; }
+      else if(fn === OPS.showText){
+        const glyphs = args[0];
+        if(Array.isArray(glyphs)){
+          const combined = matMul(tm, ctm);
+          const [ox,oy] = apply(combined, 0, 0);
+          const [ax,ay] = apply(combined, 1, 0);
+          if(isFinite(ox)&&isFinite(oy)&&isFinite(ax)&&isFinite(ay)){
+            const angleRad = Math.atan2(ay-oy, ax-ox);
+            const scaleX = Math.hypot(ax-ox, ay-oy);
+            let str = "", advance = 0;
+            for(const g of glyphs){
+              if(typeof g === "number"){ advance += -g/1000*fontSize; continue; } // TJ-kerning
+              str += (g && (g.unicode || g.fontChar)) || "";
+              advance += ((g && g.width) || 500)/1000*fontSize;
+            }
+            str = str.trim();
+            if(str) textRuns.push({ x:ox, y:oy, angleDeg: angleRad*180/Math.PI, heightPt: fontSize*scaleX, str });
+            tm = matMul([1,0,0,1, advance, 0], tm);
+          } else skipped.showText++;
+        } else skipped.showText++;
+      }
+    }catch(e){ skipped.other++; }
+  }
+  if(skipped.constructPath || skipped.setTextMatrix || skipped.showText || skipped.other){
+    console.warn("[TC 3D vektor] Några pdf.js-operatorer kändes inte igen och hoppades över (kan ge ofullständig geometri):", skipped);
+  }
+  return { lineSegments, textRuns, skipped };
+}
+
+/* Ser till att item (en PDF-ritning) är nedladdad och uppackad till ett
+   pdfjsLib-dokument, med samma cache (_attachmentCache/_cacheEntry) som
+   renderRealDrawing använder — så vi inte laddar ner/parsar samma PDF två
+   gånger bara för att både förhandsvisningen och vektorextraktionen vill
+   åt den. */
+async function ensurePdfDocForItem(item){
+  if(item.kind==="image") throw new Error('Vektorläge (DXF) kräver en PDF-ritning med riktig vektordata — funkar inte på foton. Välj "Punktmoln" eller "Grå platta" istället för den här bilagan.');
+  if(!window.pdfjsLib) throw new Error("pdf.js saknas — kan inte läsa PDF:en.");
+  const entry = _cacheEntry(item.id);
+  if(!entry.blob) entry.blob = await downloadAttachmentBlob(item.id, item.versionId);
+  if(!entry.blob) throw new Error("Ingen fildata för ritningen.");
+  if(!entry.pdfDoc){
+    const buf = await entry.blob.arrayBuffer();
+    entry.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+  }
+  const page = await entry.pdfDoc.getPage(item.page || 1);
+  return { pdfDoc: entry.pdfDoc, page };
+}
+
+/* Omvandlar en PDF-sidpunkt (punkter, PDF-rymd) till plattans LOKALA
+   (lx,ly) koordinater i meter — samma u/v-konvention som capturePointCloudLas
+   redan använder för bildpixlar (se kommentaren där), så att vektorläget
+   och punktmolnsläget garanterat hamnar exakt likadant om man växlar mellan
+   dem för samma ritning. */
+function _pdfPointToLocal(px, py, viewBox, widthM, heightM){
+  const [vx0,vy0,vx1,vy1] = viewBox;
+  const u = (px - vx0) / ((vx1 - vx0) || 1);
+  const v = (py - vy0) / ((vy1 - vy0) || 1);
+  return { lx: (u-0.5)*widthM, ly: (v-0.5)*heightM };
+}
+
+/* Bygger den faktiska DXF-textfilen (ASCII, AC1021/2007) från extraherade
+   linjer/textrader + samma placering (origin/normal/refDir) som
+   computePlanePlacement redan räknat ut. LINE-entiteter skrivs som RIKTIGA
+   3D-koordinater rakt av (LINE stödjer det direkt, ingen OCS behövs).
+   TEXT-entiteter är däremot en "2D"-DXF-entitet som ALLTID tolkas i sitt
+   eget lokala OCS (se computeOcsBasis) — världspunkten projiceras därför
+   om till (Ax,Ay)-planet, och textens läsriktning (rotation, grupp 50)
+   räknas om till VINKELN I DET PLANET, inte mot vår egen refDir. */
+function buildDxfFromVectors({ lineSegments, textRuns, viewBox, widthM, heightM, placement }){
+  const { origin, normal:N, refDir:X } = placement;
+  const Y = vCross(N, X);
+  const worldOf = (px,py) => {
+    const { lx, ly } = _pdfPointToLocal(px, py, viewBox, widthM, heightM);
+    return vAdd(origin, vAdd(vScale(X,lx), vScale(Y,ly)));
+  };
+  const { Ax, Ay } = computeOcsBasis(N);
+  const elevation = vDot(origin, N);
+  const flat = Math.abs(N.x)<1e-9 && Math.abs(N.y)<1e-9 && Math.abs(N.z-1)<1e-9;
+  const [vx0,vy0,vx1,vy1] = viewBox;
+
+  let out = "";
+  out += dxfPair(0,"SECTION") + dxfPair(2,"HEADER") + dxfPair(9,"$ACADVER") + dxfPair(1,"AC1021") + dxfPair(0,"ENDSEC");
+  out += dxfPair(0,"SECTION") + dxfPair(2,"ENTITIES");
+
+  let lineCount = 0;
+  for(const seg of lineSegments){
+    const p1 = worldOf(seg.x1, seg.y1), p2 = worldOf(seg.x2, seg.y2);
+    if(![p1.x,p1.y,p1.z,p2.x,p2.y,p2.z].every(isFinite)) continue;
+    out += dxfPair(0,"LINE") + dxfPair(8,"PDF_VEKTOR") + dxfPair(62,7);
+    out += dxfPair(10,dxfNum(p1.x)) + dxfPair(20,dxfNum(p1.y)) + dxfPair(30,dxfNum(p1.z));
+    out += dxfPair(11,dxfNum(p2.x)) + dxfPair(21,dxfNum(p2.y)) + dxfPair(31,dxfNum(p2.z));
+    lineCount++;
+  }
+
+  let textCount = 0;
+  for(const t of textRuns){
+    const pWorld = worldOf(t.x, t.y);
+    if(![pWorld.x,pWorld.y,pWorld.z].every(isFinite)) continue;
+    const ocsX = vDot(pWorld, Ax), ocsY = vDot(pWorld, Ay);
+    const rad = t.angleDeg * Math.PI/180;
+    const loc0 = _pdfPointToLocal(t.x, t.y, viewBox, widthM, heightM);
+    const loc1 = _pdfPointToLocal(t.x+Math.cos(rad), t.y+Math.sin(rad), viewBox, widthM, heightM);
+    const dWorld = vAdd(vScale(X, loc1.lx-loc0.lx), vScale(Y, loc1.ly-loc0.ly));
+    const ocsAngleDeg = Math.atan2(vDot(dWorld,Ay), vDot(dWorld,Ax)) * 180/Math.PI;
+    const heightM_text = (t.heightPt / ((vy1-vy0) || 1)) * heightM;
+    if(!isFinite(ocsX)||!isFinite(ocsY)||!isFinite(ocsAngleDeg)||!isFinite(heightM_text) || heightM_text<=0) continue;
+    const esc = String(t.str).replace(/\\/g,"\\\\").replace(/\n/g," ");
+    out += dxfPair(0,"TEXT") + dxfPair(8,"PDF_VEKTOR") + dxfPair(62,7);
+    out += dxfPair(10,dxfNum(ocsX)) + dxfPair(20,dxfNum(ocsY)) + dxfPair(30,dxfNum(elevation));
+    out += dxfPair(40,dxfNum(heightM_text));
+    out += dxfPair(1,esc);
+    out += dxfPair(50,dxfNum(ocsAngleDeg));
+    if(!flat){
+      out += dxfPair(210,dxfNum(N.x)) + dxfPair(220,dxfNum(N.y)) + dxfPair(230,dxfNum(N.z));
+    }
+    textCount++;
+  }
+
+  out += dxfPair(0,"ENDSEC") + dxfPair(0,"EOF");
+  return { text: out, lineCount, textCount };
+}
+
+/* Toppnivåfunktionen som "Ladda ner"/"Ladda upp"-knapparna anropar för
+   vektorläget — mirror av capturePointCloudLas/captureTextureJpeg. Kastar
+   ett tydligt, användarvänligt fel om bilagan inte är en PDF (t.ex. ett
+   foto) eller om PDF:en inte gick att läsa. */
+async function captureVectorDxf(item, widthM, heightM, placement){
+  const { page } = await ensurePdfDocForItem(item);
+  const viewport = page.getViewport({ scale: 1 });
+  const opList = await page.getOperatorList();
+  const { lineSegments, textRuns, skipped } = extractPdfVectors(opList, viewport.viewBox, pdfjsLib.OPS);
+  if(!lineSegments.length && !textRuns.length){
+    throw new Error("Hittade ingen vektorgeometri i PDF:en (kan vara ett skannat/rastrerat dokument snarare än en riktig vektor-PDF).");
+  }
+  const dxf = buildDxfFromVectors({ lineSegments, textRuns, viewBox: viewport.viewBox, widthM, heightM, placement });
+  console.log("[TC 3D vektor] Extraherat:", lineSegments.length, "linjesegment,", textRuns.length, "textrader. DXF:", dxf.lineCount, "LINE +", dxf.textCount, "TEXT-entiteter.", skipped);
+  return dxf;
+}
+
+/* Samma uppladdningsmönster som createModelPlaneForAttachment/
+   createPointCloudForAttachment, men för en genererad .dxf-textfil. */
+async function createDxfForAttachment(item, dxfText){
+  if(!tcAccessToken) throw new Error("Kräver en aktiv Trimble Connect-anslutning.");
+  const blob = new Blob([dxfText], { type: "application/dxf" });
+  const baseName = (item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
+  const filename = `${baseName} - 3D-vektor.dxf`;
+  console.log("[TC 3D] startar uppladdning (vektor-DXF):", { filename, bytes: dxfText.length, projectId: tcProject?.id });
+
+  let folderId;
+  try{
+    folderId = await ensurePlacementsFolder();
+    console.log("[TC 3D] mapp OK:", { folderId, name: TC_PLACEMENTS_FOLDER_NAME });
+  }catch(err){
+    console.error("[TC 3D] STEG 1 (hitta/skapa mapp) misslyckades. Fullt objekt:", err);
+    throw new Error(`Kunde inte hitta/skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}": ${describeError(err)}`);
+  }
+
+  let fileId, versionId;
+  try{
+    ({ fileId, versionId } = await uploadFileToFolder(folderId, filename, blob));
+    console.log("[TC 3D] uppladdning OK (vektor-DXF):", { fileId, versionId });
+  }catch(err){
+    console.error("[TC 3D] STEG 2 (själva filöverföringen, vektor-DXF) misslyckades. Fullt objekt:", err);
     throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${describeError(err)}`);
   }
   return { fileId, versionId, filename };
@@ -3400,8 +3733,9 @@ class DrawingPreviewWidget{
     const res = await this._recompute3d({ updateGuide:false });
     if(!res) return;
     const baseName = (res.item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
+    const mode = this.el.mode3d.value; // "ifc" | "pointcloud" | "vector"
 
-    if(this.el.pointcloud3d.checked){
+    if(mode==="pointcloud"){
       const prevText = this.el.download3d.textContent;
       this.el.download3d.disabled = true;
       this.el.download3d.textContent = "Bygger punktmoln…";
@@ -3417,6 +3751,28 @@ class DrawingPreviewWidget{
       }catch(err){
         console.error("[TC 3D] kunde inte bygga punktmoln:", err);
         this._setNote3d(`Kunde inte bygga punktmolnet: "${describeError(err)}".`);
+      }finally{
+        this.el.download3d.disabled = false;
+        this.el.download3d.textContent = prevText;
+      }
+      return;
+    }
+
+    if(mode==="vector"){
+      const prevText = this.el.download3d.textContent;
+      this.el.download3d.disabled = true;
+      this.el.download3d.textContent = "Extraherar vektorer…";
+      try{
+        const dxf = await captureVectorDxf(res.item, res.widthM, res.heightM, res.placement);
+        const blob = new Blob([dxf.text], { type:"application/dxf" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `${baseName} - 3D-vektor.dxf`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url), 2000);
+      }catch(err){
+        console.error("[TC 3D] kunde inte bygga vektor-DXF:", err);
+        this._setNote3d(`Kunde inte bygga DXF-filen: "${describeError(err)}".`);
       }finally{
         this.el.download3d.disabled = false;
         this.el.download3d.textContent = prevText;
@@ -3451,9 +3807,9 @@ class DrawingPreviewWidget{
     // ändå bara extra friktion — borttagen istället för buggfixad.
     this.el.upload3d.disabled = true;
     const prevText = this.el.upload3d.textContent;
-    const usePointCloud = this.el.pointcloud3d.checked;
+    const mode = this.el.mode3d.value; // "ifc" | "pointcloud" | "vector"
     try{
-      if(usePointCloud){
+      if(mode==="pointcloud"){
         this.el.upload3d.textContent = "Bygger punktmoln…";
         const pc = await capturePointCloudLas(res.item, res.widthM, res.heightM, res.placement);
         console.log("[TC 3D] Punktmoln byggt (uppladdning):", pc.pointCount, "punkter,", pc.gridW+"×"+pc.gridH, pc.bytes.length, "bytes.");
@@ -3462,6 +3818,15 @@ class DrawingPreviewWidget{
         console.log("[TC 3D] KLART (punktmoln):", up);
         alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}".\n\n`
           + `Nästa steg i Trimble Connect: Reality Capture/Modeller-panelen ▸ lägg till filen som modell om den inte redan syns ▸ markera den ▸ `
+          + `"Positionsinställningar" om du vill finjustera ytterligare.`);
+      }else if(mode==="vector"){
+        this.el.upload3d.textContent = "Extraherar vektorer…";
+        const dxf = await captureVectorDxf(res.item, res.widthM, res.heightM, res.placement);
+        this.el.upload3d.textContent = "Laddar upp…";
+        const up = await createDxfForAttachment(res.item, dxf.text);
+        console.log("[TC 3D] KLART (vektor-DXF):", up);
+        alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}" (${dxf.lineCount} linjer, ${dxf.textCount} textrader).\n\n`
+          + `Nästa steg i Trimble Connect: Modeller-panelen ▸ lägg till filen som modell om den inte redan syns ▸ markera den ▸ `
           + `"Positionsinställningar" om du vill finjustera ytterligare.`);
       }else{
         this.el.upload3d.textContent = "Laddar upp…";
@@ -3948,7 +4313,7 @@ class DrawingPreviewWidget{
       scaleVal3d: document.getElementById("dp-3d-scale-val"),
       guide3d: document.getElementById("dp-3d-guide"),
       guideUpdate3d: document.getElementById("dp-3d-guide-update"),
-      pointcloud3d: document.getElementById("dp-3d-pointcloud"),
+      mode3d: document.getElementById("dp-3d-mode"),
       note3d: document.getElementById("dp-3d-note"),
       download3d: document.getElementById("dp-3d-download"),
       upload3d: document.getElementById("dp-3d-upload"),
