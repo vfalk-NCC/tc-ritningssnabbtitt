@@ -1088,6 +1088,31 @@ function ifcStr(s){
   return String(s==null?"":s).replace(/'/g,"''").replace(/[\r\n\t]/g," ").slice(0,255);
 }
 
+/* Gör om ett kastat/avvisat värde till en så informativ textrad som möjligt.
+   Anledning: ett riktigt testfel visade "addIcon gav ett fel: undefined" —
+   dvs. err.message var undefined trots att err själv inte var null (annars
+   hade "err.message" kastat ett TypeError innan vi ens kom till alert()).
+   Det tyder på att felobjektet från Trimbles postMessage-baserade SDK INTE
+   är ett vanligt Error-objekt utan t.ex. ett {code:...}-objekt utan
+   "message"-fält (t.ex. en JSON-RPC-liknande "metoden finns inte"-avvisning)
+   — vilket är precis den sortens ledtråd vi behöver för att skilja "fel
+   PointIcon-format" från "addIcon finns inte alls i den här TC-versionen".
+   Testar flera vanliga fältnamn, och visar objektets nycklar/JSON som sista
+   utväg istället för bara "undefined". */
+function describeError(err){
+  if(err==null) return "inget felobjekt alls (Promise avvisades utan angiven anledning).";
+  if(err instanceof Error && err.message) return err.message;
+  if(typeof err==="string") return err;
+  if(typeof err==="object"){
+    for(const k of ["message","error","reason","description","errorMessage","detail","code"]){
+      if(err[k]!=null && err[k]!=="") return `${err[k]} (fält: "${k}")`;
+    }
+    try{ return `objekt utan igenkänt textfält — nycklar: [${Object.keys(err).join(", ")}], innehåll: ${JSON.stringify(err)}`; }
+    catch{ return `objekt som inte gick att läsa ut (typeof ${typeof err}).`; }
+  }
+  return String(err);
+}
+
 /* Omvandlar kalibreringens enhet till meter (IFC-filen deklareras alltid
    i meter). Stödjer bara metriska enheter — rimligt för svenska
    byggritningar. Okänd enhet => null (anroparen får fråga användaren). */
@@ -1279,8 +1304,8 @@ async function createModelPlaneForAttachment(item, ifcText){
     folderId = await ensurePlacementsFolder();
     console.log("[TC 3D] mapp OK:", { folderId, name: TC_PLACEMENTS_FOLDER_NAME });
   }catch(err){
-    console.error("[TC 3D] STEG 1 (hitta/skapa mapp) misslyckades:", err);
-    throw new Error(`Kunde inte hitta/skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}": ${err.message}`);
+    console.error("[TC 3D] STEG 1 (hitta/skapa mapp) misslyckades. Fullt objekt:", err);
+    throw new Error(`Kunde inte hitta/skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}": ${describeError(err)}`);
   }
 
   let fileId, versionId;
@@ -1288,8 +1313,8 @@ async function createModelPlaneForAttachment(item, ifcText){
     ({ fileId, versionId } = await uploadFileToFolder(folderId, filename, blob));
     console.log("[TC 3D] uppladdning OK:", { fileId, versionId });
   }catch(err){
-    console.error("[TC 3D] STEG 2 (själva filöverföringen) misslyckades:", err);
-    throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${err.message}`);
+    console.error("[TC 3D] STEG 2 (själva filöverföringen) misslyckades. Fullt objekt:", err);
+    throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${describeError(err)}`);
   }
   return { fileId, versionId, filename };
 }
@@ -2955,17 +2980,18 @@ class DrawingPreviewWidget{
     }
     try{
       const res = await tcApi.viewer.getObjectBoundingBoxes(currentSelection.modelId, [currentSelection.runtimeId]);
+      console.log("[TC 3D] getObjectBoundingBoxes råsvar:", res);
       const bb = (Array.isArray(res) ? res[0] : res)?.boundingBox || (Array.isArray(res) ? res[0] : res);
       const min = bb?.min, max = bb?.max;
       if(!min || !max || typeof min.x!=="number" || typeof max.x!=="number"){
-        throw new Error("Oväntat svarsformat från getObjectBoundingBoxes (se konsolen).");
+        throw new Error("Oväntat svarsformat (se raden \"getObjectBoundingBoxes råsvar\" ovan i konsolen för exakt vad som kom tillbaka).");
       }
       const center = { x:(min.x+max.x)/2, y:(min.y+max.y)/2, z:(min.z+max.z)/2 };
       this._3dAnchors = { center, min, max };
     }catch(err){
-      console.warn("[TC] getObjectBoundingBoxes misslyckades eller hade oväntad form:", err, "— råsvar loggat ovan om tillgängligt.");
+      console.warn("[TC 3D] getObjectBoundingBoxes misslyckades eller hade oväntad form. Fullt objekt:", err);
       this._3dAnchors = { center:{x:0,y:0,z:0}, min:{x:0,y:0,z:0}, max:{x:0,y:0,z:0} };
-      this._setNote3d('Kunde inte läsa bounding-boxen för markerat objekt (se webbläsarkonsolen för detaljer) — använder världens origo (0,0,0) som ankare istället. Offset-fälten funkar som vanligt därifrån.');
+      this._setNote3d(`Kunde inte läsa bounding-boxen för markerat objekt: "${describeError(err)}" (se konsolen, F12) — använder världens origo (0,0,0) som ankare istället. Offset-fälten funkar som vanligt därifrån.`);
     }
   }
   _read3dInputs(){
@@ -3021,8 +3047,8 @@ class DrawingPreviewWidget{
       this._setNote3d('addIcon anropades utan fel (se webbläsarkonsolen, F12, för exakt vad som skickades). Syns INGA punkter ändå i 3D-vyn kan orsaken vara fel enhet på "size" '
         + '(antagen meter), fel koordinatsystem för "position", eller att data:-URI:n som ikon inte stöds — berätta gärna vad du ser (eller inte ser) så justerar jag.');
     }catch(err){
-      console.warn("[TC 3D] addIcon kastade ett fel (guiden kunde inte visas):", err);
-      this._setNote3d(`addIcon gav ett fel: "${err.message}" (fullständigt fel i konsolen, F12) — troligen skiljer sig PointIcon-formatet från vad jag antog. Resten av panelen funkar ändå.`);
+      console.warn("[TC 3D] addIcon kastade ett fel (guiden kunde inte visas). Fullt objekt:", err, "Nycklar:", err&&typeof err==="object"?Object.keys(err):null);
+      this._setNote3d(`addIcon gav ett fel: "${describeError(err)}" (fullständigt objekt i konsolen, F12) — troligen skiljer sig PointIcon-formatet, eller så finns inte addIcon i den här TC-versionen. Resten av panelen funkar ändå.`);
     }
   }
   async _clearGuide3d(){
