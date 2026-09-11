@@ -142,6 +142,26 @@
   .dp-attach-comment:focus{ border-color:var(--accent); background:#1c1d20; color:var(--text); outline:none; }
   #dp-attach-empty{ padding:10px 12px; font-size:11px; color:var(--text-dim); }
 
+  /* ---------- Projektomfattande fillista: filter/sortering på "område" (manuell tagg),
+     samt tvåradiga rader (rad 1 = filnamn+objekt, rad 2 = kommentar+område) ---------- */
+  #dp-global-list-filter{ display:flex; align-items:center; gap:8px; padding:0 12px 8px;
+    flex:0 0 auto; flex-wrap:wrap; }
+  #dp-global-list-filter label{ font-size:11px; color:var(--text-dim); }
+  #dp-global-area-filter, #dp-global-sort{ flex:1 1 120px; min-width:0; background:#1c1d20;
+    border:1px solid var(--border); color:var(--text); font-size:11px; border-radius:4px; padding:3px 6px; }
+  .dp-attach-objname{ flex:1 1 auto; min-width:0; font-size:11px; color:var(--text-dim);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dp-global-row{ flex-direction:column; align-items:stretch; gap:3px; cursor:default; padding:7px 12px; }
+  .dp-global-row-top{ display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .dp-global-row-bottom{ display:flex; align-items:center; gap:6px; padding-left:20px; }
+  .dp-global-row-bottom .dp-attach-comment{ font-size:10.5px; }
+  .dp-attach-area{ flex:0 0 110px; min-width:0; background:none; border:1px solid transparent;
+    color:var(--text-dim); font-size:10.5px; padding:2px 5px; border-radius:3px; font-family:inherit;
+    text-align:right; }
+  .dp-attach-area::placeholder{ color:#5a5c60; }
+  .dp-attach-area:hover{ border-color:var(--border); }
+  .dp-attach-area:focus{ border-color:var(--accent); background:#1c1d20; color:var(--text); outline:none; text-align:left; }
+
   .dp-inline-editor{ position:absolute; z-index:5; background:rgba(255,255,255,.98); border:2px solid #e0393e;
     border-radius:4px; padding:4px 6px; font:12px "Segoe UI", Arial; color:#1a1a1a; resize:none; }
 
@@ -176,6 +196,14 @@
     <div id="dp-global-list">
       <div id="dp-global-list-header">Alla kopplade filer i projektet</div>
       <div id="dp-global-list-hint">Markera ett objekt i 3D-vyn för att se dess kopplade ritningar och bilder — eller klicka en fil nedan för att hoppa dit.</div>
+      <div id="dp-global-list-filter">
+        <label for="dp-global-area-filter">Område</label>
+        <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
+        <select id="dp-global-sort">
+          <option value="name">Sortera: Namn</option>
+          <option value="area">Sortera: Område</option>
+        </select>
+      </div>
       <div id="dp-global-list-items"></div>
     </div>
 
@@ -983,10 +1011,44 @@ async function recordInIndex(sel, item){
       name: item.name, kind: item.kind, versionId: item.versionId || null,
       modelId: sel.modelId, guid: sel.guid, runtimeId: sel.runtimeId,
       objectName: sel.name || "", updatedAt: new Date().toISOString(),
+      // Bevara ev. redan ifyllt område/kommentar — det här anropet uppdaterar
+      // bara TC-relaterade fält (namn/objekt/id:n), aldrig användarens egna
+      // manuella data.
+      area: prev?.area || "", comment: prev?.comment || "",
     };
     scheduleSaveProjectIndex();
   }catch(err){
     console.warn("[index] kunde inte registrera fil i projektindex:", err);
+  }
+}
+
+// Manuellt "område"-fält (t.ex. "Sikthall", "Sektionsfickor") satt av
+// användaren direkt i den projektomfattande listan — används för att
+// filtrera/sortera listan. Rent klientdata, ingen TC-motsvarighet.
+async function setIndexArea(fileId, area){
+  try{
+    const idx = await loadProjectIndex();
+    if(!idx.files[fileId]) return;
+    idx.files[fileId].area = area;
+    idx.files[fileId].updatedAt = new Date().toISOString();
+    scheduleSaveProjectIndex();
+  }catch(err){
+    console.warn("[index] kunde inte spara område:", err);
+  }
+}
+
+// Speglar kommentaren (som "på riktigt" bor i filens egen companion-
+// markup-fil, se DEL 4/setAttachmentComment) in i projektindexet, så att
+// den projektomfattande listan kan visa den utan att hämta EN companion-
+// fil per rad bara för att läsa en kommentar.
+async function setIndexComment(fileId, comment){
+  try{
+    const idx = await loadProjectIndex();
+    if(!idx.files[fileId]) return;
+    idx.files[fileId].comment = comment;
+    scheduleSaveProjectIndex();
+  }catch(err){
+    console.warn("[index] kunde inte spegla kommentar i indexet:", err);
   }
 }
 
@@ -1537,6 +1599,9 @@ async function setAttachmentComment(drawingId, comment, flagEl){
   const data = await loadAnnotations(drawingId);
   data.comment = comment;
   saveAnnotations(drawingId, data, flagEl);
+  // Spegla i projektindexet (DEL 1d) så den projektomfattande listan kan
+  // visa kommentaren direkt, utan en extra hämtning per fil.
+  setIndexComment(drawingId, comment);
 }
 
 /* =====================================================================
@@ -1845,7 +1910,12 @@ class GlobalIndexPanel{
     this.el = {
       root: document.getElementById("dp-global-list"),
       items: document.getElementById("dp-global-list-items"),
+      areaFilter: document.getElementById("dp-global-area-filter"),
+      sortSelect: document.getElementById("dp-global-sort"),
     };
+    this._idx = null; // senast inlästa projektindex (cachead referens, se loadProjectIndex)
+    this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
+    this.el.sortSelect.addEventListener("change", ()=> this._renderRows());
   }
   show(){ this.el.root.classList.remove("dp-hidden"); this.refresh(); }
   hide(){ this.el.root.classList.add("dp-hidden"); }
@@ -1856,40 +1926,119 @@ class GlobalIndexPanel{
       this.el.items.innerHTML = `<div id="dp-attach-empty">Kräver en aktiv Trimble Connect-anslutning — inte tillgängligt i fristående testläge.</div>`;
       return;
     }
-    let idx;
     try{
-      idx = await loadProjectIndex();
+      this._idx = await loadProjectIndex();
     }catch(err){
       this.el.items.innerHTML = `<div id="dp-attach-empty">Kunde inte läsa filindexet: ${err.message}</div>`;
       return;
     }
-    const entries = Object.entries(idx.files || {});
+    this._renderRows();
+  }
+
+  // Bygger om (a) områdes-filtrets alternativ och (b) själva radlistan,
+  // utifrån redan inläst this._idx — anropas både efter refresh() och när
+  // användaren byter filter/sortering, utan att fråga TC på nytt.
+  _renderRows(){
+    const entries = Object.entries(this._idx?.files || {});
     if(!entries.length){
       this.el.items.innerHTML = `<div id="dp-attach-empty">Inga filer registrerade ännu. Markera ett objekt med kopplade filer så byggs listan upp.</div>`;
+      this._rebuildAreaOptions([]);
       return;
     }
+
+    const allAreas = [...new Set(entries.map(([,r])=>r.area).filter(Boolean))]
+      .sort((a,b)=>a.localeCompare(b,"sv"));
+    this._rebuildAreaOptions(allAreas);
+
+    const activeArea = this.el.areaFilter.value;
+    const sortBy = this.el.sortSelect.value;
+    let list = activeArea ? entries.filter(([,r]) => (r.area||"")===activeArea) : entries.slice();
+    list.sort((a,b)=>{
+      if(sortBy==="area"){
+        const cmp = String(a[1].area||"").localeCompare(String(b[1].area||""), "sv");
+        if(cmp) return cmp;
+      }
+      return String(a[1].name).localeCompare(String(b[1].name), "sv");
+    });
+
+    if(!list.length){
+      this.el.items.innerHTML = `<div id="dp-attach-empty">Inga filer i det valda området.</div>`;
+      return;
+    }
+
     this.el.items.innerHTML = "";
-    entries
-      .sort((a,b)=> String(a[1].name).localeCompare(String(b[1].name)))
-      .forEach(([fileId, rec])=>{
-        const row = document.createElement("div");
-        row.className = "dp-attach-row";
-        const icon = document.createElement("span");
-        icon.className = "dp-attach-icon";
-        icon.textContent = kindIcon(rec.kind);
-        const name = document.createElement("span");
-        name.className = "dp-attach-name";
-        name.textContent = rec.name;
-        name.title = rec.name;
-        const objName = document.createElement("span");
-        objName.className = "dp-attach-comment";
-        objName.style.pointerEvents = "none";
-        objName.textContent = rec.objectName ? `objekt: ${rec.objectName}` : "";
-        row.append(icon, name, objName);
-        row.title = "Klicka för att markera objektet i 3D-vyn";
-        row.addEventListener("click", ()=> this._openFile(fileId, rec));
-        this.el.items.appendChild(row);
+    list.forEach(([fileId, rec])=>{
+      const row = document.createElement("div");
+      row.className = "dp-attach-row dp-global-row";
+
+      const top = document.createElement("div");
+      top.className = "dp-global-row-top";
+      top.title = "Klicka för att markera objektet i 3D-vyn";
+      const icon = document.createElement("span");
+      icon.className = "dp-attach-icon";
+      icon.textContent = kindIcon(rec.kind);
+      const name = document.createElement("span");
+      name.className = "dp-attach-name";
+      name.textContent = rec.name;
+      name.title = rec.name;
+      const objName = document.createElement("span");
+      objName.className = "dp-attach-objname";
+      objName.textContent = rec.objectName ? `objekt: ${rec.objectName}` : "";
+      top.append(icon, name, objName);
+      top.addEventListener("click", ()=> this._openFile(fileId, rec));
+
+      const bottom = document.createElement("div");
+      bottom.className = "dp-global-row-bottom";
+
+      const comment = document.createElement("input");
+      comment.className = "dp-attach-comment";
+      comment.type = "text";
+      comment.placeholder = "Lägg till kommentar…";
+      comment.title = "Kommentar (t.ex. vad fotot är taget på, eller vad ritningen visar)";
+      comment.value = rec.comment || "";
+      comment.addEventListener("click", e=> e.stopPropagation());
+      comment.addEventListener("keydown", e=>{
+        e.stopPropagation();
+        if(e.key==="Enter") comment.blur();
       });
+      comment.addEventListener("blur", ()=>{
+        const v = comment.value.trim();
+        rec.comment = v;
+        setAttachmentComment(fileId, v);
+      });
+
+      const area = document.createElement("input");
+      area.className = "dp-attach-area";
+      area.type = "text";
+      area.placeholder = "Område…";
+      area.title = "Område/plats (fritt fält du fyller i själv, t.ex. Sikthall, Sektionsfickor) — används för filtret ovan";
+      area.value = rec.area || "";
+      area.addEventListener("click", e=> e.stopPropagation());
+      area.addEventListener("keydown", e=>{
+        e.stopPropagation();
+        if(e.key==="Enter") area.blur();
+      });
+      area.addEventListener("blur", ()=>{
+        const v = area.value.trim();
+        rec.area = v;
+        setIndexArea(fileId, v);
+        const areas = [...new Set(Object.values(this._idx.files||{}).map(r=>r.area).filter(Boolean))]
+          .sort((a,b)=>a.localeCompare(b,"sv"));
+        this._rebuildAreaOptions(areas);
+      });
+
+      bottom.append(comment, area);
+      row.append(top, bottom);
+      this.el.items.appendChild(row);
+    });
+  }
+
+  _rebuildAreaOptions(areas){
+    const sel = this.el.areaFilter;
+    const current = sel.value;
+    sel.innerHTML = `<option value="">Alla områden</option>` +
+      areas.map(a=>`<option value="${a.replace(/"/g,"&quot;")}">${a}</option>`).join("");
+    if(areas.includes(current)) sel.value = current;
   }
 
   async _openFile(fileId, rec){
