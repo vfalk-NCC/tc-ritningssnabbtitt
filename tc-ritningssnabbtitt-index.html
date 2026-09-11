@@ -537,7 +537,8 @@ async function getAttachmentsForObject(sel){
   }));
 
   const result = files.filter(Boolean).map(f => IMAGE_EXT.test(f.name || "") ? {
-    kind: "image", id: f.id, versionId: f.versionId, name: f.name, capturedAt: f.createdOn,
+    kind: "image", id: f.id, versionId: f.versionId, name: f.name,
+    capturedAt: f.createdOn ? new Date(f.createdOn).toLocaleDateString("sv-SE") : "–",
   } : {
     kind: "drawing", id: f.id, versionId: f.versionId, name: f.name,
     revision: "–", discipline: "–", color: "#3d9bff",
@@ -1339,7 +1340,7 @@ async function renderRealImage(canvas, imgItem){
 
 function kindIcon(kind){ return kind==="image" ? "🖼" : "📄"; }
 function kindMeta(item){
-  return item.kind==="image" ? `Foto · ${item.capturedAt}` : `Rev. ${item.revision} · Disciplin ${item.discipline}`;
+  return item.kind==="image" ? `Foto · Uppladdad ${item.capturedAt}` : `Rev. ${item.revision} · Disciplin ${item.discipline}`;
 }
 async function renderAttachment(canvas, item){
   if(item.kind==="image") await renderRealImage(canvas, item);
