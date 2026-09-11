@@ -403,19 +403,19 @@
           <button class="dp-btn" id="dp-3d-guide-update">↻ Uppdatera guide i 3D-vyn</button>
         </div>
         <div class="dp-3d-row">
-          <label><input type="checkbox" id="dp-3d-texture"> 🧪 Bädda in bilden som textur (mycket experimentellt — se not nedan)</label>
+          <label><input type="checkbox" id="dp-3d-pointcloud"> ☁ Skapa som punktmoln istället — visar bilden i färg (bekräftat fungerande metod)</label>
         </div>
         <div id="dp-3d-note">
           Guiden ritas som fyra hörnpunkter i 3D-vyn (inte den riktiga ritningsbilden — Trimbles API kan inte rendera
-          texturer live) så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är
+          bilder live) så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är
           bounding-boxen för objektet du har markerat i 3D — flytta/rotera det markerade objektet om ankaret hamnar fel.
           Storleken (bredd/höjd) kommer från kalibreringen (verktyget "Kalibrera"). Efter uppladdning kan du finjustera
           ytterligare med Trimble Connects egna "Positionsinställningar" i Modeller-panelen.
           <b>Experimentellt</b> — testat offline, inte mot en riktig Trimble Connect-miljö än.
-          Kryssrutan <b>"Bädda in bilden som textur"</b> är ett ännu osäkrare försök att få själva bilden att synas på plattan
-          (inte bara en grå platta) — det är okänt om Trimble Connects konvertering av IFC-filer överhuvudtaget stödjer
-          texturer, och om hörnen (UV-koordinaterna) hamnar rätt väg. Låt den vara AVKRYSSAD om du bara vill ha den
-          beprövade grå plattan.
+          Kryssrutan <b>"Skapa som punktmoln istället"</b> genererar en .las-fil (punktmoln) där varje punkt har samma
+          färg som motsvarande pixel i ritningen/fotot, istället för en enfärgad grå platta — denna metod är TESTAD och
+          BEKRÄFTAD att fungera i en riktig Trimble Connect-miljö (ett testmönster med fyra färgfält visades korrekt).
+          Låt den vara AVKRYSSAD om du bara vill ha den ursprungliga, enkla grå plattan.
         </div>
         <div class="dp-3d-row dp-3d-actions">
           <button class="dp-btn" id="dp-3d-download">⬇ Ladda ner IFC</button>
@@ -1413,6 +1413,152 @@ function computeAttachmentPlaneSize(scale, canvasW, canvasH, extraScale=1){
   return { widthM, heightM };
 }
 
+/* =====================================================================
+   PUNKTMOLN (.las) — BEKRÄFTAT FUNGERANDE alternativ till den experimentella
+   IFC-texturen ovan (2026-09-11): ett handbyggt testmönster i LAS 1.2-format
+   (fyra färgfält + vit kantram, 2500 punkter) laddades upp via Trimble
+   Connects EGEN "Reality Capture"-import och visades med KORREKTA färger i
+   en riktig 3D-vy — bekräftat av användaren. Så istället för att gissa oss
+   fram i IFC:s ovanliga UV-textur-stöd (som vi INTE lyckades bekräfta)
+   använder vi punktmoln: varje pixel i ritningen/fotot blir en egen punkt
+   i rymden med exakt den färgen — punktmolns-RGB är en extremt grundläggande,
+   universellt stödd egenskap, till skillnad från UV-texturmappning på en yta.
+
+   LAS 1.2, Point Data Format 2 (XYZ + RGB, ingen GPS-tid) — ett enkelt,
+   välciterat, öppet binärformat (227 byte fast header + 26 byte per punkt).
+   Se make_test_las.js (testat och validerat separat) för själva källan till
+   den här implementationen. */
+
+/* Skriver en padded ASCII-sträng in i en DataView (motsvarar Buffer.write
+   +padEnd i Node-originalet, men DataView/ArrayBuffer finns i webbläsaren
+   där Buffer inte gör det). */
+function _lasWriteAscii(view, offset, str, len){
+  for(let i=0;i<len;i++) view.setUint8(offset+i, i<str.length ? str.charCodeAt(i) : 0);
+}
+
+/* points: [{x,y,z (meter, världskoordinater), r,g,b (0-255)}, ...].
+   Returnerar en ArrayBuffer med hela .las-filen. */
+function buildLasPointCloud({ points, scale = 0.001 }){
+  const n = points.length;
+  let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
+  for(const p of points){
+    if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x;
+    if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y;
+    if(p.z<minZ)minZ=p.z; if(p.z>maxZ)maxZ=p.z;
+  }
+  // Offset = boundingboxens min, så de råa 32-bitars heltalen hålls små/
+  // precisa oavsett hur stora projektets absoluta världskoordinater är
+  // (samma princip som IFC-plattornas lokala geometri + världsplacering).
+  const offX=minX, offY=minY, offZ=minZ;
+  const headerSize = 227, pointRecLen = 26;
+  const totalSize = headerSize + n*pointRecLen;
+  const buf = new ArrayBuffer(totalSize);
+  const view = new DataView(buf);
+  let o = 0;
+  _lasWriteAscii(view, o, "LASF", 4); o+=4;
+  view.setUint16(o,0,true); o+=2; // File Source ID
+  view.setUint16(o,0,true); o+=2; // Global Encoding
+  view.setUint32(o,0,true); o+=4; // GUID 1
+  view.setUint16(o,0,true); o+=2; // GUID 2
+  view.setUint16(o,0,true); o+=2; // GUID 3
+  o+=8; // GUID 4 (8 byte, lämnas noll)
+  view.setUint8(o,1); o+=1; // version major
+  view.setUint8(o,2); o+=1; // version minor
+  _lasWriteAscii(view,o,"QuickViewerByVFA",32); o+=32;
+  _lasWriteAscii(view,o,"QuickViewerByVFA-punktmoln",32); o+=32;
+  const now = new Date();
+  const startOfYear = Date.UTC(now.getUTCFullYear(),0,1);
+  const dayOfYear = Math.floor((now.getTime()-startOfYear)/86400000)+1;
+  view.setUint16(o, dayOfYear, true); o+=2;
+  view.setUint16(o, now.getUTCFullYear(), true); o+=2;
+  view.setUint16(o, headerSize, true); o+=2;
+  view.setUint32(o, headerSize, true); o+=4; // offset till punktdata (inga VLR:er)
+  view.setUint32(o, 0, true); o+=4; // antal VLR:er
+  view.setUint8(o, 2); o+=1; // Point Data Format 2 (XYZ + RGB)
+  view.setUint16(o, pointRecLen, true); o+=2;
+  view.setUint32(o, n, true); o+=4; // antal punkter (legacy-fält)
+  for(let i=0;i<5;i++){ view.setUint32(o, i===0?n:0, true); o+=4; } // punkter per "return"
+  view.setFloat64(o, scale, true); o+=8;
+  view.setFloat64(o, scale, true); o+=8;
+  view.setFloat64(o, scale, true); o+=8;
+  view.setFloat64(o, offX, true); o+=8;
+  view.setFloat64(o, offY, true); o+=8;
+  view.setFloat64(o, offZ, true); o+=8;
+  view.setFloat64(o, maxX, true); o+=8;
+  view.setFloat64(o, minX, true); o+=8;
+  view.setFloat64(o, maxY, true); o+=8;
+  view.setFloat64(o, minY, true); o+=8;
+  view.setFloat64(o, maxZ, true); o+=8;
+  view.setFloat64(o, minZ, true); o+=8;
+
+  for(const p of points){
+    const xi = Math.round((p.x-offX)/scale);
+    const yi = Math.round((p.y-offY)/scale);
+    const zi = Math.round((p.z-offZ)/scale);
+    view.setInt32(o, xi, true); o+=4;
+    view.setInt32(o, yi, true); o+=4;
+    view.setInt32(o, zi, true); o+=4;
+    view.setUint16(o, 0, true); o+=2; // intensitet
+    view.setUint8(o, 1); o+=1; // return-flaggor (return 1 av 1)
+    view.setUint8(o, 0); o+=1; // klassificering
+    view.setInt8(o, 0); o+=1; // scan angle rank
+    view.setUint8(o, 0); o+=1; // user data
+    view.setUint16(o, 0, true); o+=2; // point source id
+    view.setUint16(o, Math.round(p.r*257), true); o+=2; // 8-bit -> 16-bit (255*257=65535)
+    view.setUint16(o, Math.round(p.g*257), true); o+=2;
+    view.setUint16(o, Math.round(p.b*257), true); o+=2;
+  }
+  return buf;
+}
+
+/* Räknar ut hur många punkter i bredd/höjd punktmolnet ska ha, utifrån
+   plattans verkliga bredd/höjd-förhållande och en övre gräns på totala
+   antalet punkter (håller filstorlek/uppladdningstid/prestanda rimlig —
+   400 000 punkter à 26 byte blir en dryg 10 MB-fil). */
+function computePointGridSize(widthM, heightM, maxPoints=400000, minPerAxis=20){
+  const aspect = (widthM>0 && heightM>0) ? widthM/heightM : 1;
+  let gridW = Math.round(Math.sqrt(maxPoints*aspect));
+  let gridH = Math.round(gridW/aspect);
+  gridW = Math.max(minPerAxis, gridW);
+  gridH = Math.max(minPerAxis, gridH);
+  return { gridW, gridH };
+}
+
+/* Fångar bilagan (ritning/foto) som ett rutnät av färgade punkter i VÄRLDS-
+   koordinater, klara att skrivas till en .las-fil av buildLasPointCloud.
+   Återanvänder renderAttachment (samma rendering som förhandsvisningen) och
+   samma placerings-matematik (origin/refDir/normal) som computePlanePlacement
+   redan räknat ut, så punktmolnet garanterat hamnar exakt där guiden/plattan
+   visas. */
+async function capturePointCloudLas(item, widthM, heightM, placement, { maxPoints=400000 } = {}){
+  const { gridW, gridH } = computePointGridSize(widthM, heightM, maxPoints);
+  const canvas = document.createElement("canvas");
+  canvas.width = gridW; canvas.height = gridH;
+  await renderAttachment(canvas, item);
+  const ctx = canvas.getContext("2d");
+  const imgData = ctx.getImageData(0, 0, gridW, gridH).data; // RGBA, rad för rad uppifrån
+
+  const X = placement.refDir, N = placement.normal;
+  const Y = vCross(N, X);
+  const origin = placement.origin;
+  const points = new Array(gridW*gridH);
+  let idx = 0;
+  for(let iy=0; iy<gridH; iy++){
+    // Bildens rad 0 = ÖVERKANT = plattans "topp" => högt v/ly.
+    const v = gridH>1 ? 1 - iy/(gridH-1) : 0.5;
+    const ly = (v-0.5)*heightM;
+    for(let ix=0; ix<gridW; ix++){
+      const u = gridW>1 ? ix/(gridW-1) : 0.5;
+      const lx = (u-0.5)*widthM;
+      const p = vAdd(origin, vAdd(vScale(X,lx), vScale(Y,ly)));
+      const pi = (iy*gridW+ix)*4;
+      points[idx++] = { x:p.x, y:p.y, z:p.z, r:imgData[pi], g:imgData[pi+1], b:imgData[pi+2] };
+    }
+  }
+  const buf = buildLasPointCloud({ points, scale: 0.001 });
+  return { bytes: new Uint8Array(buf), gridW, gridH, pointCount: points.length };
+}
+
 /* Fångar en ren, upplösningsbegränsad bild av bilagan (ritning/foto) för
    inbäddning som IFC-textur — återanvänder renderAttachment(canvas,item)
    (samma funktion som ritar förhandsvisningen) så att texturen garanterat
@@ -1478,6 +1624,37 @@ async function createModelPlaneForAttachment(item, ifcText){
     console.log("[TC 3D] uppladdning OK:", { fileId, versionId });
   }catch(err){
     console.error("[TC 3D] STEG 2 (själva filöverföringen) misslyckades. Fullt objekt:", err);
+    throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${describeError(err)}`);
+  }
+  return { fileId, versionId, filename };
+}
+
+/* Samma uppladdningsmönster som createModelPlaneForAttachment ovan, men för
+   en genererad .las-punktmolnsfil istället för en .ifc-platta — se
+   buildLasPointCloud/capturePointCloudLas. Delar samma mapp
+   (TC_PLACEMENTS_FOLDER_NAME) och samma steg-uppdelade felhantering. */
+async function createPointCloudForAttachment(item, lasBytes){
+  if(!tcAccessToken) throw new Error("Kräver en aktiv Trimble Connect-anslutning.");
+  const blob = new Blob([lasBytes], { type: "application/octet-stream" });
+  const baseName = (item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
+  const filename = `${baseName} - 3D-punktmoln.las`;
+  console.log("[TC 3D] startar uppladdning (punktmoln):", { filename, bytes: lasBytes.length, projectId: tcProject?.id });
+
+  let folderId;
+  try{
+    folderId = await ensurePlacementsFolder();
+    console.log("[TC 3D] mapp OK:", { folderId, name: TC_PLACEMENTS_FOLDER_NAME });
+  }catch(err){
+    console.error("[TC 3D] STEG 1 (hitta/skapa mapp) misslyckades. Fullt objekt:", err);
+    throw new Error(`Kunde inte hitta/skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}": ${describeError(err)}`);
+  }
+
+  let fileId, versionId;
+  try{
+    ({ fileId, versionId } = await uploadFileToFolder(folderId, filename, blob));
+    console.log("[TC 3D] uppladdning OK (punktmoln):", { fileId, versionId });
+  }catch(err){
+    console.error("[TC 3D] STEG 2 (själva filöverföringen, punktmoln) misslyckades. Fullt objekt:", err);
     throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${describeError(err)}`);
   }
   return { fileId, versionId, filename };
@@ -3222,26 +3399,33 @@ class DrawingPreviewWidget{
   async _download3d(){
     const res = await this._recompute3d({ updateGuide:false });
     if(!res) return;
-    let texture = null;
-    if(this.el.texture3d.checked){
+    const baseName = (res.item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
+
+    if(this.el.pointcloud3d.checked){
       const prevText = this.el.download3d.textContent;
       this.el.download3d.disabled = true;
-      this.el.download3d.textContent = "Fångar bild…";
+      this.el.download3d.textContent = "Bygger punktmoln…";
       try{
-        const jpegBytes = await captureTextureJpeg(res.item, res.widthM, res.heightM);
-        texture = { jpegBytes };
-        console.log("[TC 3D] Textur fångad (nedladdning):", jpegBytes.length, "bytes JPEG.");
+        const pc = await capturePointCloudLas(res.item, res.widthM, res.heightM, res.placement);
+        console.log("[TC 3D] Punktmoln byggt (nedladdning):", pc.pointCount, "punkter,", pc.gridW+"×"+pc.gridH, pc.bytes.length, "bytes.");
+        const blob = new Blob([pc.bytes], { type:"application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `${baseName} - 3D-punktmoln.las`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url), 2000);
       }catch(err){
-        console.warn("[TC 3D] Kunde inte fånga textur, laddar ner utan textur istället:", err);
-        this._setNote3d(`Kunde inte fånga bilden som textur ("${describeError(err)}") — laddade ner en grå platta utan textur istället.`);
+        console.error("[TC 3D] kunde inte bygga punktmoln:", err);
+        this._setNote3d(`Kunde inte bygga punktmolnet: "${describeError(err)}".`);
       }finally{
         this.el.download3d.disabled = false;
         this.el.download3d.textContent = prevText;
       }
+      return;
     }
-    const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement, texture);
+
+    const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement);
     const blob = new Blob([ifcText], { type:"application/x-step" });
-    const baseName = (res.item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = `${baseName} - 3D-platta.ifc`;
@@ -3267,31 +3451,31 @@ class DrawingPreviewWidget{
     // ändå bara extra friktion — borttagen istället för buggfixad.
     this.el.upload3d.disabled = true;
     const prevText = this.el.upload3d.textContent;
-    let texture = null;
+    const usePointCloud = this.el.pointcloud3d.checked;
     try{
-      if(this.el.texture3d.checked){
-        this.el.upload3d.textContent = "Fångar bild…";
-        const jpegBytes = await captureTextureJpeg(res.item, res.widthM, res.heightM);
-        texture = { jpegBytes };
-        console.log("[TC 3D] Textur fångad (uppladdning):", jpegBytes.length, "bytes JPEG.");
+      if(usePointCloud){
+        this.el.upload3d.textContent = "Bygger punktmoln…";
+        const pc = await capturePointCloudLas(res.item, res.widthM, res.heightM, res.placement);
+        console.log("[TC 3D] Punktmoln byggt (uppladdning):", pc.pointCount, "punkter,", pc.gridW+"×"+pc.gridH, pc.bytes.length, "bytes.");
+        this.el.upload3d.textContent = "Laddar upp…";
+        const up = await createPointCloudForAttachment(res.item, pc.bytes);
+        console.log("[TC 3D] KLART (punktmoln):", up);
+        alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}".\n\n`
+          + `Nästa steg i Trimble Connect: Reality Capture/Modeller-panelen ▸ lägg till filen som modell om den inte redan syns ▸ markera den ▸ `
+          + `"Positionsinställningar" om du vill finjustera ytterligare.`);
+      }else{
+        this.el.upload3d.textContent = "Laddar upp…";
+        const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement);
+        console.log("[TC 3D] IFC-text genererad, laddar upp…", { längd: ifcText.length });
+        const up = await createModelPlaneForAttachment(res.item, ifcText);
+        console.log("[TC 3D] KLART:", up);
+        alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}".\n\n`
+          + `Nästa steg i Trimble Connect: Modeller-panelen ▸ lägg till filen som modell om den inte redan syns ▸ markera den ▸ `
+          + `"Positionsinställningar" om du vill finjustera ytterligare.`);
       }
     }catch(err){
-      console.warn("[TC 3D] Kunde inte fånga textur, laddar upp utan textur istället:", err);
-      this._setNote3d(`Kunde inte fånga bilden som textur ("${describeError(err)}") — laddar upp en grå platta utan textur istället.`);
-      texture = null;
-    }
-    this.el.upload3d.textContent = "Laddar upp…";
-    try{
-      const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement, texture);
-      console.log("[TC 3D] IFC-text genererad, laddar upp…", { längd: ifcText.length, medTextur: !!texture });
-      const up = await createModelPlaneForAttachment(res.item, ifcText);
-      console.log("[TC 3D] KLART:", up);
-      alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}".\n\n`
-        + `Nästa steg i Trimble Connect: Modeller-panelen ▸ lägg till filen som modell om den inte redan syns ▸ markera den ▸ `
-        + `"Positionsinställningar" om du vill finjustera ytterligare.`);
-    }catch(err){
-      console.error("[TC 3D] kunde inte skapa/ladda upp 3D-platta:", err);
-      alert("Kunde inte skapa 3D-plattan: " + err.message);
+      console.error("[TC 3D] kunde inte skapa/ladda upp 3D-innehåll:", err);
+      alert("Kunde inte skapa 3D-innehållet: " + err.message);
     }finally{
       this.el.upload3d.disabled = false;
       this.el.upload3d.textContent = prevText;
@@ -3764,7 +3948,7 @@ class DrawingPreviewWidget{
       scaleVal3d: document.getElementById("dp-3d-scale-val"),
       guide3d: document.getElementById("dp-3d-guide"),
       guideUpdate3d: document.getElementById("dp-3d-guide-update"),
-      texture3d: document.getElementById("dp-3d-texture"),
+      pointcloud3d: document.getElementById("dp-3d-pointcloud"),
       note3d: document.getElementById("dp-3d-note"),
       download3d: document.getElementById("dp-3d-download"),
       upload3d: document.getElementById("dp-3d-upload"),
