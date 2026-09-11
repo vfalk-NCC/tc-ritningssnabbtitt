@@ -692,9 +692,37 @@ function tcApiUrl(path){
   return `https://${TC_CONFIG.API_REGION_HOST}/tc/api/2.0${path}`;
 }
 
+/* Läser ut ett så informativt felmeddelande som möjligt ur ett misslyckat
+   fetch-svar. VIKTIGT (tillagd 2026-09-11): tidigare kastade vi bara
+   "(${res.status})" och slängde bort själva svarskroppen — så en 500 gav
+   bara "(500)" utan någon som helst ledtråd om VARFÖR. Trimbles API
+   returnerar ofta en JSON-body med ett riktigt felmeddelande (t.ex.
+   {"message":"..."}) även vid 5xx-fel, så vi försöker läsa och tolka den
+   här, med flera fallbacks om svaret inte är JSON. Kan bara anropas EN
+   gång per response (body kan bara läsas en gång) — används därför bara
+   i grenar där vi redan vet att vi INTE ska läsa svaret på något annat sätt. */
+async function tcErrBody(res){
+  try{
+    const text = await res.text();
+    if(!text) return "";
+    try{
+      const j = JSON.parse(text);
+      const msg = j.message || j.error || j.errorMessage || j.reason || j.detail || j.title;
+      return msg ? String(msg).slice(0,300) : JSON.stringify(j).slice(0,300);
+    }catch{
+      return text.slice(0,300);
+    }
+  }catch{
+    return "";
+  }
+}
+
 async function tcFetchJson(path){
   const res = await fetch(tcApiUrl(path), { headers: { Authorization: `Bearer ${tcAccessToken}` } });
-  if(!res.ok) throw new Error(`TC API-anrop misslyckades (${res.status}): ${path}`);
+  if(!res.ok){
+    const body = await tcErrBody(res);
+    throw new Error(`TC API-anrop misslyckades (${res.status}): ${path}${body ? " — "+body : ""}`);
+  }
   return await res.json();
 }
 
@@ -811,7 +839,10 @@ async function ensureDataFolder(){
     headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ name: TC_DATA_FOLDER_NAME, parentId: rootId }),
   });
-  if(!res.ok) throw new Error(`Kunde inte skapa datamapp (${res.status})`);
+  if(!res.ok){
+    const body = await tcErrBody(res);
+    throw new Error(`Kunde inte skapa datamapp (${res.status})${body ? " — "+body : ""}`);
+  }
   const folder = await res.json();
   _dataFolderIdCache = folder.id;
   _dataFolderIdCacheProjectId = projectId;
@@ -824,22 +855,41 @@ async function uploadFileToFolder(folderId, filename, blob){
     headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ name: filename }),
   });
-  if(!initRes.ok) throw new Error(`Kunde inte initiera uppladdning (${initRes.status})`);
+  if(!initRes.ok){
+    const body = await tcErrBody(initRes);
+    throw new Error(`Kunde inte initiera uppladdning (${initRes.status})${body ? " — "+body : ""}`);
+  }
   const initData = await initRes.json();
   const uploadId = initData.uploadId;
-  const putUrl = initData.contents?.[0]?.url;
+  const contents = Array.isArray(initData.contents) ? initData.contents : [];
+  const putUrl = contents[0]?.url;
   if(!uploadId || !putUrl) throw new Error("Ofullständigt svar från uppladdnings-initiering.");
+  // Diagnostik (2026-09-11): om Trimble delar upp STORA filer i flera delar
+  // (contents.length > 1, t.ex. multipart-uppladdning) skulle vi idag bara
+  // ladda upp den FÖRSTA delen och tysta strunta i resten — vilket exakt
+  // skulle kunna förklara en 500 vid commit (servern ser en ofullständig
+  // uppladdning). Vi hanterar det inte automatiskt än (vet inte det exakta
+  // formatet för flerdelade uppladdningar), men loggar tydligt så vi vet
+  // OM det är det som händer nästa gång ett fel uppstår.
+  console.log("[TC upload] init-svar:", { uploadId, antalDelar: contents.length, blobBytes: blob.size, filename });
+  if(contents.length > 1) console.warn("[TC upload] VARNING: uppladdnings-initieringen bad om", contents.length, "delar men vi laddar bara upp DEN FÖRSTA — troligen orsaken om nästa steg (commit) misslyckas för större filer.");
 
   const bytes = await blob.arrayBuffer();
   const putRes = await fetch(putUrl, { method: "PUT", body: bytes });
-  if(!putRes.ok) throw new Error(`Filöverföring misslyckades (${putRes.status})`);
+  if(!putRes.ok){
+    const body = await tcErrBody(putRes);
+    throw new Error(`Filöverföring misslyckades (${putRes.status})${body ? " — "+body : ""}`);
+  }
 
   const commitRes = await fetch(tcApiUrl(`/files/fs/commit`), {
     method: "POST",
     headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ uploadId }),
   });
-  if(!commitRes.ok) throw new Error(`Kunde inte slutföra uppladdning (${commitRes.status})`);
+  if(!commitRes.ok){
+    const body = await tcErrBody(commitRes);
+    throw new Error(`Kunde inte slutföra uppladdning (${commitRes.status})${body ? " — "+body : ""}`);
+  }
   let result = await commitRes.json();
 
   for(let i=0; i<10 && result.status && result.status !== "DONE" && result.status !== "ERROR"; i++){
@@ -860,7 +910,10 @@ async function createObjectLink(modelId, guid, fileId){
       target: { type: "FILE", id: fileId },
     }),
   });
-  if(!res.ok) throw new Error(`Kunde inte skapa Object Link (${res.status})`);
+  if(!res.ok){
+    const body = await tcErrBody(res);
+    throw new Error(`Kunde inte skapa Object Link (${res.status})${body ? " — "+body : ""}`);
+  }
   return await res.json();
 }
 
@@ -1326,7 +1379,10 @@ async function ensurePlacementsFolder(){
     headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ name: TC_PLACEMENTS_FOLDER_NAME, parentId: rootId }),
   });
-  if(!res.ok) throw new Error(`Kunde inte skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}" (${res.status})`);
+  if(!res.ok){
+    const body = await tcErrBody(res);
+    throw new Error(`Kunde inte skapa mappen "${TC_PLACEMENTS_FOLDER_NAME}" (${res.status})${body ? " — "+body : ""}`);
+  }
   const folder = await res.json();
   _placementsFolderIdCache = folder.id;
   _placementsFolderIdCacheProjectId = projectId;
