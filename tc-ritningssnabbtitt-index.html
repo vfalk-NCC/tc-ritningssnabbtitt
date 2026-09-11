@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ritningssnabbtitt</title>
+<title>Quick viewer by VFA</title>
 
 <!-- ============================================================
      EXTERNA BIBLIOTEK
@@ -102,8 +102,11 @@
     border-bottom:1px solid var(--border); flex-wrap:wrap; }
   .dp-rgroup{ display:flex; flex-direction:column; align-items:center; gap:5px; padding:6px 8px 5px;
     border:1px solid var(--border); border-radius:6px; background:var(--panel); }
-  .dp-rgroup-btns{display:flex; gap:3px;}
+  .dp-rgroup-btns{display:flex; gap:3px; flex-wrap:wrap; align-items:center;}
   .dp-rgroup-label{font-size:9px; color:var(--text-dim);}
+  /* Tunn vertikal avdelare mellan verktyg/färg/tjocklek/åtgärder, nu när
+     allt ligger i EN gemensam "Verktyg"-ruta istället för flera separata. */
+  .dp-rdivider{ align-self:stretch; width:1px; background:var(--border); margin:2px 2px; }
   .dp-tbtn{ width:38px; height:34px; display:flex; flex-direction:column; align-items:center; justify-content:center;
     gap:1px; background:none; border:1px solid transparent; border-radius:5px; color:var(--text);
     cursor:pointer; font-size:8px; }
@@ -142,25 +145,38 @@
   .dp-attach-comment:focus{ border-color:var(--accent); background:#1c1d20; color:var(--text); outline:none; }
   #dp-attach-empty{ padding:10px 12px; font-size:11px; color:var(--text-dim); }
 
-  /* ---------- Projektomfattande fillista: filter/sortering på "område" (manuell tagg),
-     samt tvåradiga rader (rad 1 = filnamn+objekt, rad 2 = kommentar+område) ---------- */
+  /* ---------- Projektomfattande fillista: sökfält + områdesfilter, samt en
+     riktig tabell (kolumner Namn / Område / Kommentar) med klickbara,
+     sorterbara kolumnrubriker istället för de tidigare fristående raderna ---------- */
   #dp-global-list-filter{ display:flex; align-items:center; gap:8px; padding:0 12px 8px;
     flex:0 0 auto; flex-wrap:wrap; }
-  #dp-global-list-filter label{ font-size:11px; color:var(--text-dim); }
-  #dp-global-area-filter, #dp-global-sort{ flex:1 1 120px; min-width:0; background:#1c1d20;
-    border:1px solid var(--border); color:var(--text); font-size:11px; border-radius:4px; padding:3px 6px; }
-  .dp-attach-objname{ flex:1 1 auto; min-width:0; font-size:11px; color:var(--text-dim);
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .dp-global-row{ flex-direction:column; align-items:stretch; gap:3px; cursor:default; padding:7px 12px; }
-  .dp-global-row-top{ display:flex; align-items:center; gap:6px; cursor:pointer; }
-  .dp-global-row-bottom{ display:flex; align-items:center; gap:6px; padding-left:20px; }
-  .dp-global-row-bottom .dp-attach-comment{ font-size:10.5px; }
-  .dp-attach-area{ flex:0 0 110px; min-width:0; background:none; border:1px solid transparent;
-    color:var(--text-dim); font-size:10.5px; padding:2px 5px; border-radius:3px; font-family:inherit;
-    text-align:right; }
+  #dp-global-search{ flex:1 1 160px; min-width:0; background:#1c1d20; border:1px solid var(--border);
+    color:var(--text); font-size:11px; border-radius:4px; padding:4px 7px; font-family:inherit; }
+  #dp-global-search::placeholder{ color:#5a5c60; }
+  #dp-global-area-filter{ flex:0 1 120px; min-width:0; background:#1c1d20;
+    border:1px solid var(--border); color:var(--text); font-size:11px; border-radius:4px; padding:4px 6px; }
+
+  .dp-global-grid{ display:grid; grid-template-columns: minmax(0,1.7fr) minmax(0,0.9fr) minmax(0,1.7fr);
+    gap:4px 10px; align-items:center; }
+  #dp-global-table-head{ padding:5px 12px; flex:0 0 auto; background:var(--panel-2);
+    border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+  .dp-gth{ font-size:10px; text-transform:uppercase; letter-spacing:.03em; color:var(--text-dim);
+    font-weight:600; cursor:pointer; user-select:none; display:flex; align-items:center; gap:3px; }
+  .dp-gth:hover{ color:var(--text); }
+  .dp-gth .dp-sort-arrow{ font-size:9px; opacity:.8; }
+  .dp-global-row{ padding:6px 12px; cursor:default; }
+  .dp-global-cell-name{ display:flex; flex-direction:column; gap:1px; min-width:0; cursor:pointer; }
+  .dp-global-cell-name .dp-attach-namerow{ display:flex; align-items:center; gap:5px; min-width:0; }
+  .dp-global-cell-name .dp-attach-name{ max-width:none; flex:1 1 auto; }
+  .dp-attach-objname{ font-size:10px; color:var(--text-dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .dp-global-row .dp-attach-comment, .dp-global-row .dp-attach-area{ width:100%; box-sizing:border-box;
+    text-align:left; font-size:10.5px; }
+  .dp-attach-area{ background:none; border:1px solid transparent;
+    color:var(--text-dim); padding:2px 5px; border-radius:3px; font-family:inherit; }
   .dp-attach-area::placeholder{ color:#5a5c60; }
   .dp-attach-area:hover{ border-color:var(--border); }
-  .dp-attach-area:focus{ border-color:var(--accent); background:#1c1d20; color:var(--text); outline:none; text-align:left; }
+  .dp-attach-area:focus{ border-color:var(--accent); background:#1c1d20; color:var(--text); outline:none; }
 
   .dp-inline-editor{ position:absolute; z-index:5; background:rgba(255,255,255,.98); border:2px solid #e0393e;
     border-radius:4px; padding:4px 6px; font:12px "Segoe UI", Arial; color:#1a1a1a; resize:none; }
@@ -185,7 +201,7 @@
 
 <div id="app">
   <div id="ext-toolbar">
-    Ritningssnabbtitt — <b id="ext-project-name">–</b>
+    Quick viewer by VFA — <b id="ext-project-name">–</b>
     <div id="ext-status"><span class="dot"></span><span id="ext-status-text">Ansluter…</span></div>
   </div>
 
@@ -197,12 +213,13 @@
       <div id="dp-global-list-header">Alla kopplade filer i projektet</div>
       <div id="dp-global-list-hint">Markera ett objekt i 3D-vyn för att se dess kopplade ritningar och bilder — eller klicka en fil nedan för att hoppa dit.</div>
       <div id="dp-global-list-filter">
-        <label for="dp-global-area-filter">Område</label>
+        <input id="dp-global-search" type="text" placeholder="Sök namn, område eller kommentar…">
         <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
-        <select id="dp-global-sort">
-          <option value="name">Sortera: Namn</option>
-          <option value="area">Sortera: Område</option>
-        </select>
+      </div>
+      <div id="dp-global-table-head" class="dp-global-grid">
+        <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span></div>
+        <div class="dp-gth" data-sort="area">Område <span class="dp-sort-arrow"></span></div>
+        <div class="dp-gth" data-sort="comment">Kommentar <span class="dp-sort-arrow"></span></div>
       </div>
       <div id="dp-global-list-items"></div>
     </div>
@@ -244,22 +261,16 @@
            aktuell bilaga är ett foto med sådan EXIF-data. -->
       <div id="dp-photo-meta"></div>
 
+      <!-- Enda ruta/block, rubricerad "Verktyg" — tidigare separata block
+           (Text/Rita/Mått/Färg/Tjocklek/Åtgärd) är borttagna på begäran,
+           allt ligger nu platt i en rad med tunna avdelare mellan grupperna
+           av knappar. Panorering har ingen egen knapp längre — håll in
+           scrollhjulet (mittenknappen) för att panorera, oavsett verktyg. -->
       <div id="dp-ribbon">
-        <div id="dp-ribbon-groups" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;"></div>
         <div class="dp-rgroup">
-          <div class="dp-rgroup-btns" id="dp-color-swatches"></div>
-          <span class="dp-rgroup-label">Färg</span>
-        </div>
-        <div class="dp-rgroup">
-          <div class="dp-rgroup-btns" id="dp-width-btns"></div>
-          <span class="dp-rgroup-label">Tjocklek</span>
-        </div>
-        <div class="dp-rgroup">
-          <div class="dp-rgroup-btns">
-            <button class="dp-btn" id="dp-undo">↺ Ångra</button>
-            <button class="dp-btn" id="dp-clear-all">🗑 Rensa</button>
+          <div class="dp-rgroup-btns" id="dp-ribbon-groups">
           </div>
-          <span class="dp-rgroup-label">Åtgärd</span>
+          <span class="dp-rgroup-label">Verktyg</span>
         </div>
         <div id="dp-ribbon-note">
           * Mått visas i verklig skala om ritningen kalibrerats (verktyget "Kalibrera"), annars i px.
@@ -1288,6 +1299,14 @@ function drawAnnotationItem(ctx,w,h,item,selected,scale){
       ctx.beginPath(); ctx.arc(a.x,a.y,6,0,Math.PI*2); ctx.stroke();
       ctx.fillStyle="rgba(61,155,255,.25)";
       ctx.beginPath(); ctx.arc(a.x,a.y,6,0,Math.PI*2); ctx.fill();
+      // Fyra dragbara "handtag" i hörnen på pratbubblans ruta — låter en
+      // krympa/förstora rutan så den kan anpassas efter textmängden,
+      // oberoende av ankarpunkten (se _hitTestDetailed/_onMove: "resize-*").
+      ctx.fillStyle="#3d9bff"; ctx.strokeStyle="#ffffff"; ctx.lineWidth=1;
+      [[bx,by],[bx+bw,by],[bx,by+bh],[bx+bw,by+bh]].forEach(([hx,hy])=>{
+        ctx.fillRect(hx-4,hy-4,8,8);
+        ctx.strokeRect(hx-4,hy-4,8,8);
+      });
     } else {
       let pts=[];
       if(item.points) pts=pts.concat(item.points);
@@ -1661,6 +1680,12 @@ class AnnotationEngine{
     return { x:(e.clientX-r.left)/r.width, y:(e.clientY-r.top)/r.height };
   }
   _dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+  _cursorForPart(part){
+    if(part==="anchor") return "crosshair";
+    if(part==="resize-nw" || part==="resize-se") return "nwse-resize";
+    if(part==="resize-ne" || part==="resize-sw") return "nesw-resize";
+    return "move";
+  }
 
   _onDown(e){
     // "pan" hanteras helt av DrawingPreviewWidget (panorerar scroll-
@@ -1744,6 +1769,20 @@ class AnnotationEngine{
       } else if(this.dragging.part==="box"){
         updated = JSON.parse(JSON.stringify(orig));
         updated.box = { ...orig.box, x: orig.box.x+dx, y: orig.box.y+dy };
+      } else if(this.dragging.part && this.dragging.part.startsWith("resize-")){
+        // Dra i ett hörn på pratbubblans ruta för att ändra dess storlek
+        // (t.ex. krympa den till en kort kommentar) — den MOTSATTA kanten
+        // hålls still, precis som vanliga resize-handtag.
+        updated = JSON.parse(JSON.stringify(orig));
+        const ob = orig.box, minW=0.035, minH=0.025;
+        const east = this.dragging.part==="resize-ne" || this.dragging.part==="resize-se";
+        const south = this.dragging.part==="resize-sw" || this.dragging.part==="resize-se";
+        let x=ob.x, y=ob.y, w, h;
+        if(east) w = Math.max(minW, ob.w+dx);
+        else { w = Math.max(minW, ob.w-dx); x = ob.x+ob.w-w; }
+        if(south) h = Math.max(minH, ob.h+dy);
+        else { h = Math.max(minH, ob.h-dy); y = ob.y+ob.h-h; }
+        updated.box = { x, y, w, h };
       } else {
         updated = this._shiftItem(orig, dx, dy);
       }
@@ -1753,7 +1792,7 @@ class AnnotationEngine{
     }
     if(this.tool==="select" && !this.dragging){
       const hit = this._hitTestDetailed(p);
-      this.canvas.style.cursor = hit ? (hit.part==="anchor" ? "crosshair" : "move") : "default";
+      this.canvas.style.cursor = hit ? this._cursorForPart(hit.part) : "default";
     }
     if(this.pendingShape){
       if(this.pendingShape.type==="pen") this.pendingShape.points.push(p);
@@ -1834,6 +1873,18 @@ class AnnotationEngine{
       if(item.type==="callout"){
         if(this._dist(p, item.anchor) <= anchorPad) return {index:i, part:"anchor"};
         const b = item.box;
+        // Hörnhandtagen kollas FÖRE hela rutan, eftersom hörnen ligger på
+        // rutans kant och annars alltid skulle träffas som "box" (flytta)
+        // istället för att kunna dra för att ändra storlek.
+        const corners = {
+          "resize-nw": { x:b.x,     y:b.y     },
+          "resize-ne": { x:b.x+b.w, y:b.y     },
+          "resize-sw": { x:b.x,     y:b.y+b.h },
+          "resize-se": { x:b.x+b.w, y:b.y+b.h },
+        };
+        for(const part in corners){
+          if(this._dist(p, corners[part]) <= anchorPad) return {index:i, part};
+        }
         if(p.x>=b.x-pad && p.x<=b.x+b.w+pad && p.y>=b.y-pad && p.y<=b.y+b.h+pad) return {index:i, part:"box"};
         continue;
       }
@@ -1911,11 +1962,22 @@ class GlobalIndexPanel{
       root: document.getElementById("dp-global-list"),
       items: document.getElementById("dp-global-list-items"),
       areaFilter: document.getElementById("dp-global-area-filter"),
-      sortSelect: document.getElementById("dp-global-sort"),
+      search: document.getElementById("dp-global-search"),
+      head: document.getElementById("dp-global-table-head"),
     };
     this._idx = null; // senast inlästa projektindex (cachead referens, se loadProjectIndex)
+    this._sortField = "name";
+    this._sortDir = "asc";
     this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
-    this.el.sortSelect.addEventListener("change", ()=> this._renderRows());
+    this.el.search.addEventListener("input", ()=> this._renderRows());
+    this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
+      th.addEventListener("click", ()=>{
+        const field = th.dataset.sort;
+        if(this._sortField===field) this._sortDir = this._sortDir==="asc" ? "desc" : "asc";
+        else { this._sortField = field; this._sortDir = "asc"; }
+        this._renderRows();
+      });
+    });
   }
   show(){ this.el.root.classList.remove("dp-hidden"); this.refresh(); }
   hide(){ this.el.root.classList.add("dp-hidden"); }
@@ -1935,11 +1997,14 @@ class GlobalIndexPanel{
     this._renderRows();
   }
 
-  // Bygger om (a) områdes-filtrets alternativ och (b) själva radlistan,
-  // utifrån redan inläst this._idx — anropas både efter refresh() och när
-  // användaren byter filter/sortering, utan att fråga TC på nytt.
+  // Bygger om (a) områdes-filtrets alternativ, (b) sorteringspilarna i
+  // tabellhuvudet och (c) själva tabellraderna, utifrån redan inläst
+  // this._idx — anropas efter refresh() och varje gång användaren skriver
+  // i sökfältet, byter område eller klickar en kolumnrubrik, utan att
+  // fråga TC på nytt.
   _renderRows(){
     const entries = Object.entries(this._idx?.files || {});
+    this._updateSortArrows();
     if(!entries.length){
       this.el.items.innerHTML = `<div id="dp-attach-empty">Inga filer registrerade ännu. Markera ett objekt med kopplade filer så byggs listan upp.</div>`;
       this._rebuildAreaOptions([]);
@@ -1951,29 +2016,41 @@ class GlobalIndexPanel{
     this._rebuildAreaOptions(allAreas);
 
     const activeArea = this.el.areaFilter.value;
-    const sortBy = this.el.sortSelect.value;
-    let list = activeArea ? entries.filter(([,r]) => (r.area||"")===activeArea) : entries.slice();
+    const q = this.el.search.value.trim().toLowerCase();
+    let list = entries.filter(([,r])=>{
+      if(activeArea && (r.area||"")!==activeArea) return false;
+      if(!q) return true;
+      // Fritextsök över filnamn, objektnamn, område och kommentar samtidigt.
+      const hay = `${r.name} ${r.objectName||""} ${r.area||""} ${r.comment||""}`.toLowerCase();
+      return hay.includes(q);
+    });
+
+    const field = this._sortField, dir = this._sortDir==="desc" ? -1 : 1;
     list.sort((a,b)=>{
-      if(sortBy==="area"){
-        const cmp = String(a[1].area||"").localeCompare(String(b[1].area||""), "sv");
-        if(cmp) return cmp;
-      }
-      return String(a[1].name).localeCompare(String(b[1].name), "sv");
+      let cmp;
+      if(field==="area") cmp = String(a[1].area||"").localeCompare(String(b[1].area||""), "sv");
+      else if(field==="comment") cmp = String(a[1].comment||"").localeCompare(String(b[1].comment||""), "sv");
+      else cmp = String(a[1].name).localeCompare(String(b[1].name), "sv");
+      if(!cmp && field!=="name") cmp = String(a[1].name).localeCompare(String(b[1].name), "sv");
+      return cmp*dir;
     });
 
     if(!list.length){
-      this.el.items.innerHTML = `<div id="dp-attach-empty">Inga filer i det valda området.</div>`;
+      this.el.items.innerHTML = `<div id="dp-attach-empty">Inga filer matchar sökningen/området.</div>`;
       return;
     }
 
     this.el.items.innerHTML = "";
     list.forEach(([fileId, rec])=>{
       const row = document.createElement("div");
-      row.className = "dp-attach-row dp-global-row";
+      row.className = "dp-attach-row dp-global-row dp-global-grid";
 
-      const top = document.createElement("div");
-      top.className = "dp-global-row-top";
-      top.title = "Klicka för att markera objektet i 3D-vyn";
+      // Kolumn 1: Namn (ikon + filnamn, med objektnamn som liten undertext) — klick markerar objektet.
+      const nameCell = document.createElement("div");
+      nameCell.className = "dp-global-cell-name";
+      nameCell.title = "Klicka för att markera objektet i 3D-vyn";
+      const nameRow = document.createElement("div");
+      nameRow.className = "dp-attach-namerow";
       const icon = document.createElement("span");
       icon.className = "dp-attach-icon";
       icon.textContent = kindIcon(rec.kind);
@@ -1981,43 +2058,22 @@ class GlobalIndexPanel{
       name.className = "dp-attach-name";
       name.textContent = rec.name;
       name.title = rec.name;
+      nameRow.append(icon, name);
       const objName = document.createElement("span");
       objName.className = "dp-attach-objname";
       objName.textContent = rec.objectName ? `objekt: ${rec.objectName}` : "";
-      top.append(icon, name, objName);
-      top.addEventListener("click", ()=> this._openFile(fileId, rec));
+      nameCell.append(nameRow, objName);
+      nameCell.addEventListener("click", ()=> this._openFile(fileId, rec));
 
-      const bottom = document.createElement("div");
-      bottom.className = "dp-global-row-bottom";
-
-      const comment = document.createElement("input");
-      comment.className = "dp-attach-comment";
-      comment.type = "text";
-      comment.placeholder = "Lägg till kommentar…";
-      comment.title = "Kommentar (t.ex. vad fotot är taget på, eller vad ritningen visar)";
-      comment.value = rec.comment || "";
-      comment.addEventListener("click", e=> e.stopPropagation());
-      comment.addEventListener("keydown", e=>{
-        e.stopPropagation();
-        if(e.key==="Enter") comment.blur();
-      });
-      comment.addEventListener("blur", ()=>{
-        const v = comment.value.trim();
-        rec.comment = v;
-        setAttachmentComment(fileId, v);
-      });
-
+      // Kolumn 2: Område (redigerbart, manuellt fält).
+      const areaCell = document.createElement("div");
       const area = document.createElement("input");
       area.className = "dp-attach-area";
       area.type = "text";
       area.placeholder = "Område…";
-      area.title = "Område/plats (fritt fält du fyller i själv, t.ex. Sikthall, Sektionsfickor) — används för filtret ovan";
+      area.title = "Område/plats (fritt fält du fyller i själv, t.ex. Sikthall, Sektionsfickor)";
       area.value = rec.area || "";
-      area.addEventListener("click", e=> e.stopPropagation());
-      area.addEventListener("keydown", e=>{
-        e.stopPropagation();
-        if(e.key==="Enter") area.blur();
-      });
+      area.addEventListener("keydown", e=>{ if(e.key==="Enter") area.blur(); });
       area.addEventListener("blur", ()=>{
         const v = area.value.trim();
         rec.area = v;
@@ -2026,10 +2082,33 @@ class GlobalIndexPanel{
           .sort((a,b)=>a.localeCompare(b,"sv"));
         this._rebuildAreaOptions(areas);
       });
+      areaCell.appendChild(area);
 
-      bottom.append(comment, area);
-      row.append(top, bottom);
+      // Kolumn 3: Kommentar (redigerbart, speglas till filens egen companion-fil).
+      const commentCell = document.createElement("div");
+      const comment = document.createElement("input");
+      comment.className = "dp-attach-comment";
+      comment.type = "text";
+      comment.placeholder = "Lägg till kommentar…";
+      comment.title = "Kommentar (t.ex. vad fotot är taget på, eller vad ritningen visar)";
+      comment.value = rec.comment || "";
+      comment.addEventListener("keydown", e=>{ if(e.key==="Enter") comment.blur(); });
+      comment.addEventListener("blur", ()=>{
+        const v = comment.value.trim();
+        rec.comment = v;
+        setAttachmentComment(fileId, v);
+      });
+      commentCell.appendChild(comment);
+
+      row.append(nameCell, areaCell, commentCell);
       this.el.items.appendChild(row);
+    });
+  }
+
+  _updateSortArrows(){
+    this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
+      const arrow = th.querySelector(".dp-sort-arrow");
+      arrow.textContent = th.dataset.sort===this._sortField ? (this._sortDir==="asc" ? "▲" : "▼") : "";
     });
   }
 
@@ -2310,21 +2389,40 @@ class DrawingPreviewWidget{
 
   /* ---------------------------------------------------------------------
      Panorering: dra med panoreringsverktyget för att scrolla runt i en
-     inzoomad ritning/bild. dp-modal-body har overflow:auto sedan tidigare
-     (så att scrollbars/styrplatta redan fungerade) — det här lägger bara
-     till drag-att-panorera som ett alternativ, styrt av ribbonens "Panorera"
-     -verktyg, ungefär som i vanliga bildvisare/kartor.
+     inzoomad ritning/bild — ELLER, oavsett vilket verktyg som är valt,
+     genom att hålla in scrollhjulet (mittenknappen) och dra, som i
+     kartor/CAD-program. dp-modal-body har overflow:auto sedan tidigare
+     (så att scrollbars/styrplatta redan fungerade).
+
+     BUGFIX: tidigare avslutades draget på "pointerleave" (musen lämnar
+     wrap-elementets yta). Det låter first bra, men eftersom wrap:en bara
+     är lika stor som den inzoomade canvasen kunde man mycket lätt "lämna"
+     den mitt i ett drag när man panorerade nära kanten av en högt inzoomad
+     bild/ritning — det kändes som att panoreringen plötsligt stannade/
+     "stötte i ett tak". setPointerCapture nedan gör att pointermove/up
+     ändå styrs korrekt till wrap:en oavsett var musen faktiskt befinner
+     sig, så pointerleave behövs inte (och ska INTE) avsluta draget.
      --------------------------------------------------------------------- */
   _bindPan(){
     let dragging=false, startX=0, startY=0, startL=0, startT=0;
     const wrap = this.el.canvasWrap;
-    wrap.addEventListener("pointerdown", e=>{
-      if(this.engine.tool!=="pan") return;
+    const startDrag = e=>{
       dragging = true;
       startX = e.clientX; startY = e.clientY;
       startL = this.el.body.scrollLeft; startT = this.el.body.scrollTop;
       wrap.classList.add("dp-panning");
       try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
+    };
+    wrap.addEventListener("pointerdown", e=>{
+      if(e.button===1){
+        // Mittenknappen (scrollhjulet) panorerar alltid, oavsett aktivt
+        // verktyg — hindra webbläsarens inbyggda auto-scroll-markör.
+        e.preventDefault();
+        startDrag(e);
+        return;
+      }
+      if(this.engine.tool!=="pan") return;
+      startDrag(e);
     });
     wrap.addEventListener("pointermove", e=>{
       if(!dragging) return;
@@ -2334,7 +2432,7 @@ class DrawingPreviewWidget{
     const end = ()=>{ dragging=false; wrap.classList.remove("dp-panning"); };
     wrap.addEventListener("pointerup", end);
     wrap.addEventListener("pointercancel", end);
-    wrap.addEventListener("pointerleave", end);
+    // Se kommentaren ovan — pointerleave avslutar MEDVETET inte draget.
   }
 
   /* ---------------------------------------------------------------------
@@ -2477,56 +2575,45 @@ class DrawingPreviewWidget{
   }
 
   _buildRibbon(){
-    const GROUPS = [
-      { label:"Verktyg", tools:[
-        {id:"select", icon:"↖", label:"Markera", title:"Markera, flytta och redigera. På en pratbubbla: dra i punkten (ringen) för att peka om, eller i fönstret för att flytta det."},
-        {id:"pan", icon:"✋", label:"Panorera", title:"Dra för att panorera i bilden/ritningen. Zooma med scrollhjulet (upp till 1000%) eller +/− ovan."},
-        {id:"pen", icon:"✎", label:"Frihand"},
-      ]},
-      { label:"Text", tools:[
-        {id:"text", icon:"T", label:"Textruta"},
-        {id:"callout", icon:"💬", label:"Pratbubbla"},
-      ]},
-      { label:"Rita", tools:[
-        {id:"line", icon:"╱", label:"Linje"},
-        {id:"arrow", icon:"↗", label:"Pil"},
-        {id:"rect", icon:"▭", label:"Rektangel"},
-        {id:"ellipse", icon:"◯", label:"Ellips"},
-        {id:"cloud", icon:"☁", label:"Moln"},
-      ]},
-      { label:"Mät", tools:[
-        {id:"measureDistance", icon:"↔", label:"Avstånd"},
-        {id:"measurePerimeter", icon:"⬠", label:"Omkrets"},
-        {id:"measureArea", icon:"▦", label:"Area"},
-        {id:"calibrate", icon:"📏", label:"Kalibrera", title:"Dra en linje över en känd sträcka på ritningen och ange verklig längd, så visas mått i rätt enhet istället för px."},
-      ]},
+    // Allt samlat i EN platt lista under en enda "Verktyg"-rubrik (se HTML)
+    // istället för tidigare separata block (Verktyg/Text/Rita/Mät/Färg/
+    // Tjocklek/Åtgärd). Linje/Rektangel/Ellips/Moln är borttagna på begäran
+    // (bara Pil + frihandsritning ["Rita"] finns kvar av ritverktygen) —
+    // rendering/hit-test för redan sparade sådana annoteringar finns kvar i
+    // AnnotationEngine, det är bara knapparna för att skapa NYA som tagits
+    // bort. Panorera har ingen egen knapp längre, se _bindPan (mittenklick).
+    const TOOLS = [
+      {id:"select", icon:"↖", label:"Markera", title:"Markera, flytta och redigera. På en pratbubbla: dra i hörnen för att ändra storlek, i punkten (ringen) för att peka om, eller i fönstret för att flytta det."},
+      {id:"arrow", icon:"↗", label:"Pil"},
+      {id:"pen", icon:"✎", label:"Rita", title:"Frihandsritning."},
+      {id:"text", icon:"T", label:"Textruta"},
+      {id:"callout", icon:"💬", label:"Pratbubbla"},
+      {id:"measureDistance", icon:"↔", label:"Mått"},
+      {id:"measureArea", icon:"▦", label:"Area"},
+      {id:"measurePerimeter", icon:"⬠", label:"Omkrets"},
+      {id:"calibrate", icon:"📏", label:"Kalibrera", title:"Dra en linje över en känd sträcka på ritningen och ange verklig längd, så visas mått i rätt enhet istället för px."},
     ];
     const container = document.getElementById("dp-ribbon-groups");
     this._ribbonButtons = [];
-    GROUPS.forEach(group=>{
-      const g = document.createElement("div");
-      g.className = "dp-rgroup";
-      const row = document.createElement("div");
-      row.className = "dp-rgroup-btns";
-      group.tools.forEach(t=>{
-        const btn = document.createElement("button");
-        btn.className = "dp-tbtn";
-        btn.dataset.tool = t.id;
-        btn.title = t.title || t.label;
-        btn.innerHTML = `<span class="ic">${t.icon}</span><span>${t.label}</span>`;
-        btn.addEventListener("click", ()=> this._setTool(t.id));
-        row.appendChild(btn);
-        this._ribbonButtons.push(btn);
-      });
-      const label = document.createElement("span");
-      label.className = "dp-rgroup-label";
-      label.textContent = group.label;
-      g.appendChild(row); g.appendChild(label);
-      container.appendChild(g);
+    TOOLS.forEach(t=>{
+      const btn = document.createElement("button");
+      btn.className = "dp-tbtn";
+      btn.dataset.tool = t.id;
+      btn.title = t.title || t.label;
+      btn.innerHTML = `<span class="ic">${t.icon}</span><span>${t.label}</span>`;
+      btn.addEventListener("click", ()=> this._setTool(t.id));
+      container.appendChild(btn);
+      this._ribbonButtons.push(btn);
     });
 
+    const divider = ()=>{ const d=document.createElement("span"); d.className="dp-rdivider"; return d; };
+
+    container.appendChild(divider());
+    const swatchWrap = document.createElement("span");
+    swatchWrap.className = "dp-rgroup-btns";
+    swatchWrap.id = "dp-color-swatches";
+    container.appendChild(swatchWrap);
     const COLORS = ["#e0393e","#3d9bff","#4caf7d","#e0a63a","#1a1a1a"];
-    const swatchWrap = document.getElementById("dp-color-swatches");
     COLORS.forEach((c,i)=>{
       const b = document.createElement("button");
       b.className = "dp-swatch" + (i===0 ? " dp-active" : "");
@@ -2539,8 +2626,12 @@ class DrawingPreviewWidget{
       swatchWrap.appendChild(b);
     });
 
+    container.appendChild(divider());
+    const widthWrap = document.createElement("span");
+    widthWrap.className = "dp-rgroup-btns";
+    widthWrap.id = "dp-width-btns";
+    container.appendChild(widthWrap);
     const WIDTHS = [1.5,2.5,4.5];
-    const widthWrap = document.getElementById("dp-width-btns");
     WIDTHS.forEach((wd,i)=>{
       const b = document.createElement("button");
       b.className = "dp-widthdot" + (i===1 ? " dp-active" : "");
@@ -2556,8 +2647,14 @@ class DrawingPreviewWidget{
       widthWrap.appendChild(b);
     });
 
-    document.getElementById("dp-undo").addEventListener("click", ()=> this.engine.undo());
-    document.getElementById("dp-clear-all").addEventListener("click", ()=> this.engine.clearAll());
+    container.appendChild(divider());
+    const undoBtn = document.createElement("button");
+    undoBtn.className = "dp-btn"; undoBtn.id = "dp-undo"; undoBtn.textContent = "↺ Ångra";
+    undoBtn.addEventListener("click", ()=> this.engine.undo());
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "dp-btn"; clearBtn.id = "dp-clear-all"; clearBtn.textContent = "🗑 Rensa";
+    clearBtn.addEventListener("click", ()=> this.engine.clearAll());
+    container.append(undoBtn, clearBtn);
   }
 
   _cacheDom(){
