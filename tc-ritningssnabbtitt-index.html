@@ -121,6 +121,29 @@
   .dp-widthdot.dp-active{ border-color:var(--accent); background:rgba(61,155,255,.15); }
   #dp-ribbon-note{ font-size:10px; color:var(--text-dim); margin-left:auto; align-self:center; max-width:260px; text-align:right; }
 
+  /* ---------- DEL 1e v2: "Lägg till i 3D-vy"-panelen (ankare + offset +
+     rotation/lutning + live guide) — ersätter den gamla enkla
+     confirm()-dialogen. Se kommentar vid _addToModel()/_computePlacement()
+     i JS-delen för hela resonemanget. ---------- */
+  #dp-3d-panel{ display:none; flex-direction:column; gap:8px; padding:10px 14px;
+    background:var(--panel-2); border-bottom:1px solid var(--border); font-size:11px; }
+  #dp-3d-panel.dp-show{ display:flex; }
+  #dp-3d-panel h4{ margin:0; font-size:11px; font-weight:700; color:var(--text); }
+  .dp-3d-row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .dp-3d-row label{ display:flex; align-items:center; gap:5px; color:var(--text-dim); white-space:nowrap; }
+  .dp-3d-row input[type="number"]{ width:64px; background:#1c1d20; border:1px solid var(--border);
+    color:var(--text); font-size:11px; border-radius:4px; padding:3px 5px; font-family:inherit; }
+  .dp-3d-row select{ background:#1c1d20; border:1px solid var(--border); color:var(--text);
+    font-size:11px; border-radius:4px; padding:3px 5px; }
+  .dp-3d-row input[type="range"]{ flex:1 1 120px; min-width:80px; }
+  .dp-3d-valspan{ color:var(--text); font-weight:600; min-width:34px; display:inline-block; }
+  #dp-3d-note{ font-size:10px; color:var(--text-dim); line-height:1.5; background:var(--panel);
+    border:1px solid var(--border); border-radius:5px; padding:6px 8px; }
+  #dp-3d-note b{ color:var(--text); }
+  .dp-3d-actions{ justify-content:flex-end; gap:6px; }
+  .dp-btn-primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  .dp-btn-primary:hover{ filter:brightness(1.1); }
+
   /* ---------- "Endast för admin"-spärr ---------- */
   #dp-admin-gate{ position:fixed; inset:0; z-index:500; background:var(--bg);
     display:flex; align-items:center; justify-content:center; padding:24px; }
@@ -337,6 +360,56 @@
         <div id="dp-ribbon-note">
           * Mått visas i verklig skala om ritningen kalibrerats (verktyget "Kalibrera"), annars i px.
           Dubbelklicka/Enter avslutar omkrets &amp; area.
+        </div>
+      </div>
+
+      <!-- "Lägg till i 3D-vy" (EXPERIMENTELLT) — v2: ankare på markerat objekt
+           + offset/rotation/lutning + live guide i 3D-vyn (addIcon), istället
+           för v1:s enda confirm()-dialog. Se DEL 1e i JS-delen. -->
+      <div id="dp-3d-panel">
+        <h4>🧊 Lägg till i 3D-vy (experimentellt)</h4>
+        <div class="dp-3d-row">
+          <label>Ankarpunkt på markerat objekt:
+            <select id="dp-3d-anchor">
+              <option value="center">Centrum</option>
+              <option value="min">Nedre kant</option>
+              <option value="max">Övre kant</option>
+            </select>
+          </label>
+        </div>
+        <div class="dp-3d-row">
+          <label>X-offset (m) <input type="number" id="dp-3d-x" value="0" step="0.1"></label>
+          <label>Y-offset (m) <input type="number" id="dp-3d-y" value="0" step="0.1"></label>
+          <label>Z-offset (m) <input type="number" id="dp-3d-z" value="0" step="0.1"></label>
+        </div>
+        <div class="dp-3d-row">
+          <label style="flex:1 1 100%;">Rotation kring normalen: <span class="dp-3d-valspan" id="dp-3d-rot-val">0°</span>
+            <input type="range" id="dp-3d-rot" min="-180" max="180" value="0" step="1"></label>
+        </div>
+        <div class="dp-3d-row">
+          <label style="flex:1 1 100%;">Lutning (0° = liggande plant, 90° = stående): <span class="dp-3d-valspan" id="dp-3d-tilt-val">0°</span>
+            <input type="range" id="dp-3d-tilt" min="-90" max="90" value="0" step="1"></label>
+        </div>
+        <div class="dp-3d-row">
+          <label style="flex:1 1 100%;">Extra skala: <span class="dp-3d-valspan" id="dp-3d-scale-val">1.00×</span>
+            <input type="range" id="dp-3d-scale" min="0.5" max="2" value="1" step="0.01"></label>
+        </div>
+        <div class="dp-3d-row">
+          <label><input type="checkbox" id="dp-3d-guide" checked> Synlig guide i 3D-vyn (fyra hörnpunkter)</label>
+          <button class="dp-btn" id="dp-3d-guide-update">↻ Uppdatera guide i 3D-vyn</button>
+        </div>
+        <div id="dp-3d-note">
+          Guiden ritas som fyra hörnpunkter i 3D-vyn (inte den riktiga ritningsbilden — Trimbles API kan inte rendera
+          texturer live) så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är
+          bounding-boxen för objektet du har markerat i 3D — flytta/rotera det markerade objektet om ankaret hamnar fel.
+          Storleken (bredd/höjd) kommer från kalibreringen (verktyget "Kalibrera"). Efter uppladdning kan du finjustera
+          ytterligare med Trimble Connects egna "Positionsinställningar" i Modeller-panelen.
+          <b>Experimentellt</b> — testat offline, inte mot en riktig Trimble Connect-miljö än.
+        </div>
+        <div class="dp-3d-row dp-3d-actions">
+          <button class="dp-btn" id="dp-3d-download">⬇ Ladda ner IFC</button>
+          <button class="dp-btn dp-btn-primary" id="dp-3d-upload">☁ Ladda upp till projekt</button>
+          <button class="dp-btn" id="dp-3d-cancel">Stäng</button>
         </div>
       </div>
 
@@ -1016,13 +1089,53 @@ function ifcStr(s){
    byggritningar. Okänd enhet => null (anroparen får fråga användaren). */
 const IFC_UNIT_TO_METERS = { mm:0.001, cm:0.01, dm:0.1, m:1, km:1000 };
 
+/* ---------------------------------------------------------------------
+   Vektormatte — DELAS mellan den levande 3D-guiden (addIcon, ritas direkt
+   i Trimble Connects 3D-vy) och själva IFC-genereringen, så att guidens
+   fyra hörnpunkter GARANTERAT hamnar på exakt samma plats som plattan
+   som sen laddas upp. Se computePlanePlacement().
+   --------------------------------------------------------------------- */
+function vAdd(a,b){ return {x:a.x+b.x, y:a.y+b.y, z:a.z+b.z}; }
+function vScale(a,s){ return {x:a.x*s, y:a.y*s, z:a.z*s}; }
+function vDot(a,b){ return a.x*b.x+a.y*b.y+a.z*b.z; }
+function vCross(a,b){ return {x:a.y*b.z-a.z*b.y, y:a.z*b.x-a.x*b.z, z:a.x*b.y-a.y*b.x}; }
+function vNorm(a){ const l=Math.hypot(a.x,a.y,a.z)||1; return {x:a.x/l, y:a.y/l, z:a.z/l}; }
+/* Rodrigues rotationsformel: roterar vektorn v kring (enhets-)axeln "axis", deg grader. */
+function rotateAroundAxis(v, axis, deg){
+  if(!deg) return v;
+  const k = vNorm(axis), rad = deg*Math.PI/180, c = Math.cos(rad), s = Math.sin(rad);
+  const t1 = vScale(v, c), t2 = vScale(vCross(k,v), s), t3 = vScale(k, vDot(k,v)*(1-c));
+  return vAdd(vAdd(t1,t2), t3);
+}
+
+/* Räknar ut plattans fullständiga 3D-placering: origo + lokal X-axel
+   ("refDir") + lokal Z-axel/normal ("normal") i VÄRLDSKOORDINATER, samt
+   de fyra hörnens världskoordinater (för guiden). "rotationDeg" vrider
+   plattan kring sin egen normal (när den ligger plant = kring vertikalen).
+   "tiltDeg" fäller upp/ner den längs sin (redan roterade) lokala X-axel,
+   som ett gångjärn — 90° ger en stående platta (sektion/fasad). */
+function computePlanePlacement({ anchor, offset, rotationDeg=0, tiltDeg=0, widthM, heightM }){
+  const origin = vAdd(anchor, offset);
+  let X = rotateAroundAxis({x:1,y:0,z:0}, {x:0,y:0,z:1}, rotationDeg);
+  let N = tiltDeg ? rotateAroundAxis({x:0,y:0,z:1}, X, tiltDeg) : {x:0,y:0,z:1};
+  X = vNorm(X); N = vNorm(N);
+  const Y = vCross(N, X);
+  const hw = widthM/2, hh = heightM/2;
+  const corner = (lx,ly) => vAdd(origin, vAdd(vScale(X,lx), vScale(Y,ly)));
+  const corners = [ corner(-hw,-hh), corner(hw,-hh), corner(hw,hh), corner(-hw,hh) ];
+  return { origin, normal:N, refDir:X, corners };
+}
+
 /* Bygger en fristående, självbärande IFC4-fil (en enda .ifc-textfil, inga
    externa resurser) med EN tunn rektangulär platta i verklig storlek,
-   centrerad i modellens origo (0,0,0), liggande plant (som ett planritning
-   ovanpå marken) — vrid/flytta/skala in den mot resten av modellen med
-   Trimble Connects egna "Positionsinställningar" efter uppladdning. */
-function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.005 }){
+   placerad enligt "placement" (se computePlanePlacement — origin/normal/
+   refDir i världskoordinater). Om "placement" utelämnas placeras plattan
+   som förut: centrerad i modellens origo (0,0,0), liggande plant. */
+function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.005, placement = null }){
   const hw = ifcReal(widthM/2), hh = ifcReal(heightM/2), th = ifcReal(thicknessM);
+  const origin = placement?.origin || {x:0,y:0,z:0};
+  const normal = placement?.normal || {x:0,y:0,z:1};
+  const refDir = placement?.refDir || {x:1,y:0,z:0};
   const gProject=newIfcGuid(), gSite=newIfcGuid(), gBuilding=newIfcGuid(), gStorey=newIfcGuid(),
         gAggPS=newIfcGuid(), gAggSB=newIfcGuid(), gAggBS=newIfcGuid(), gProxy=newIfcGuid(), gContains=newIfcGuid();
   const nm = ifcStr(name || "Ritning");
@@ -1033,7 +1146,7 @@ function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.
     "ISO-10303-21;",
     "HEADER;",
     "FILE_DESCRIPTION((''),'2;1');",
-    `FILE_NAME('${nm}.ifc','${new Date().toISOString()}',(''),(''),'Quick viewer by VFA - IFC-platta v1','Quick viewer by VFA','');`,
+    `FILE_NAME('${nm}.ifc','${new Date().toISOString()}',(''),(''),'Quick viewer by VFA - IFC-platta v2','Quick viewer by VFA','');`,
     "FILE_SCHEMA(('IFC4'));",
     "ENDSEC;",
     "DATA;",
@@ -1071,7 +1184,14 @@ function buildIfcPlaneFile({ widthM, heightM, name, description, thicknessM = 0.
     `#48=IFCEXTRUDEDAREASOLID(#46,#9,#7,${th});`,
     `#49=IFCSHAPEREPRESENTATION(#11,'Body','SweptSolid',(#48));`,
     `#50=IFCPRODUCTDEFINITIONSHAPE($,$,(#49));`,
-    `#51=IFCLOCALPLACEMENT(#26,#9);`,
+    // Plattans VÄRLDSplacering (origo/normal/refDir) — se computePlanePlacement().
+    // Själva geometrin (#40-#48) ligger kvar i ett enkelt lokalt koordinatsystem;
+    // det är #51 som faktiskt flyttar/roterar/lutar den ut i modellens rymd.
+    `#60=IFCCARTESIANPOINT((${ifcReal(origin.x)},${ifcReal(origin.y)},${ifcReal(origin.z)}));`,
+    `#61=IFCDIRECTION((${ifcReal(normal.x)},${ifcReal(normal.y)},${ifcReal(normal.z)}));`,
+    `#62=IFCDIRECTION((${ifcReal(refDir.x)},${ifcReal(refDir.y)},${ifcReal(refDir.z)}));`,
+    `#63=IFCAXIS2PLACEMENT3D(#60,#61,#62);`,
+    `#51=IFCLOCALPLACEMENT(#26,#63);`,
     `#52=IFCBUILDINGELEMENTPROXY('${gProxy}',#5,'${nm}','${desc}',$,#51,#50,$,$);`,
     `#53=IFCRELCONTAINEDINSPATIALSTRUCTURE('${gContains}',#5,$,$,(#52),#27);`,
     "ENDSEC;",
@@ -1112,29 +1232,42 @@ async function ensurePlacementsFolder(){
   return folder.id;
 }
 
-/* Genererar en IFC-platta i verklig skala för given bilaga (utifrån dess
-   kalibrering) och laddar upp den till TC_PLACEMENTS_FOLDER_NAME. Kastar
-   fel med ett användarvänligt meddelande om något saknas. */
-async function createModelPlaneForAttachment(item, scale, canvasW, canvasH){
-  if(!tcAccessToken) throw new Error("Kräver en aktiv Trimble Connect-anslutning.");
+/* Räknar ut plattans verkliga bredd/höjd (meter) utifrån kalibreringen
+   för den öppna ritningen/bilden + en extra skalfaktor från panelen.
+   Kastar ett användarvänligt fel om ritningen inte är kalibrerad eller
+   enheten inte känns igen (samma krav som förut, oförändrat). */
+function computeAttachmentPlaneSize(scale, canvasW, canvasH, extraScale=1){
   if(!scale || !scale.pxPerUnit) throw new Error('Ritningen/fotot är inte kalibrerat än. Använd verktyget "Kalibrera" först, så att verklig storlek är känd.');
   const factor = IFC_UNIT_TO_METERS[scale.unit];
   if(!factor) throw new Error(`Okänd enhet "${scale.unit}" på kalibreringen — stödjer bara mm, cm, dm, m, km.`);
-  const widthM = (canvasW/scale.pxPerUnit) * factor;
-  const heightM = (canvasH/scale.pxPerUnit) * factor;
+  const widthM = (canvasW/scale.pxPerUnit) * factor * extraScale;
+  const heightM = (canvasH/scale.pxPerUnit) * factor * extraScale;
   if(!(widthM>0) || !(heightM>0)) throw new Error("Kunde inte räkna ut en giltig storlek (bredd/höjd blev 0).");
+  return { widthM, heightM };
+}
 
+/* Bygger IFC-texten för en given bilaga + redan uträknad placering (se
+   computePlanePlacement) — delas av både "Ladda ner"- och "Ladda upp
+   till projekt"-knapparna i DEL 2/DrawingPreviewWidget, så de garanterat
+   producerar identisk fil. */
+function buildIfcTextForAttachment(item, widthM, heightM, placement){
   const description = `Genererad platta för "${item.name}". Verklig storlek: ${widthM.toFixed(2)} × ${heightM.toFixed(2)} m. `
-    + `Skapad av Quick viewer by VFA ${new Date().toLocaleDateString("sv-SE")}. Placera/rotera/skala in den mot modellen med `
-    + `Trimble Connects "Positionsinställningar" (Align 3D Models).`;
-  const ifcText = buildIfcPlaneFile({ widthM, heightM, name: item.name, description });
+    + `Skapad av Quick viewer by VFA ${new Date().toLocaleDateString("sv-SE")}. Ankare/offset/rotation/lutning satta i appens `
+    + `"Lägg till i 3D-vy"-panel. Finjustera vid behov ytterligare med Trimble Connects "Positionsinställningar" (Align 3D Models).`;
+  return buildIfcPlaneFile({ widthM, heightM, name: item.name, description, placement });
+}
+
+/* Laddar upp en redan genererad IFC-textsträng till TC_PLACEMENTS_FOLDER_NAME.
+   Kastar fel med ett användarvänligt meddelande om något går fel. */
+async function createModelPlaneForAttachment(item, ifcText){
+  if(!tcAccessToken) throw new Error("Kräver en aktiv Trimble Connect-anslutning.");
   const blob = new Blob([ifcText], { type: "application/x-step" });
   const baseName = (item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
   const filename = `${baseName} - 3D-platta.ifc`;
 
   const folderId = await ensurePlacementsFolder();
   const { fileId, versionId } = await uploadFileToFolder(folderId, filename, blob);
-  return { fileId, versionId, filename, widthM, heightM };
+  return { fileId, versionId, filename };
 }
 
 /* Enkel mappbläddrare som popup-panel. onPick(file) anropas när användaren
@@ -2676,6 +2809,10 @@ class DrawingPreviewWidget{
     this.engine.setTool("none");
     this.el.loading.classList.remove("dp-show");
     this.el.error.classList.remove("dp-show");
+    // Nytt objekt markerat/visat — ev. öppen "Lägg till i 3D-vy"-panel
+    // hänvisar till ett gammalt ankare/gammal bilaga, så stäng den (städar
+    // även bort ev. guide-punkter i 3D-vyn).
+    this._close3dPanel?.();
 
     // Om vi kom hit via projekt-filindexets globala lista (klick på en fil
     // när inget objekt var markerat) — hoppa direkt till just den bilagan
@@ -2703,6 +2840,7 @@ class DrawingPreviewWidget{
     this.el.view.classList.remove("dp-visible");
     this.currentObj = null;
     this.el.attachList.innerHTML = "";
+    this._close3dPanel?.();
     globalIndexPanel?.show();
   }
 
@@ -2735,56 +2873,196 @@ class DrawingPreviewWidget{
     }
   }
 
-  // EXPERIMENTELLT (DEL 1e): genererar en IFC-platta i verklig skala av
-  // den ÖPPNA ritningen/fotot (utifrån dess kalibrering) och laddar upp
-  // den till projektet. Placerar INTE ut den automatiskt i 3D-vyn — det
-  // sista steget (flytta/rotera/skala) görs med Trimble Connects egna
-  // "Positionsinställningar" (Models-panelen ▸ ⋮ ▸ Position settings),
-  // se kommentaren vid buildIfcPlaneFile ovan för varför.
-  async _addToModel(){
+  /* =====================================================================
+     EXPERIMENTELLT (DEL 1e v2): "Lägg till i 3D-vy"-panelen.
+
+     Flöde: 🧊 öppnar panelen och hämtar bounding-boxen för det just nu
+     MARKERADE 3D-objektet (viewer.getObjectBoundingBoxes) som ANKARE —
+     dvs. plattans utgångsläge blir centrum/nedre/övre kant av det objekt
+     du redan har markerat, istället för alltid världens origo (v1:s
+     beteende). Offset/rotation/lutning/skala i panelen justerar sedan
+     därifrån, och en LIVE guide (fyra hörnpunkter, ritade direkt i 3D-vyn
+     via viewer.addIcon) visar var plattan hamnar INNAN du laddar upp.
+
+     Det som är BEKRÄFTAT mot Trimbles officiella API-dokumentation:
+     viewer.getObjectBoundingBoxes och viewer.addIcon/removeIcon finns
+     som metoder. Det som INTE gick att bekräfta (och alltså är en
+     kvalificerad gissning tills ni testat i er egen miljö): exakt form på
+     svaret från getObjectBoundingBoxes (antar {boundingBox:{min,max}} med
+     {x,y,z}-fält) och på PointIcon (antar {id, iconPath, position:{x,y,z},
+     size} — iconPath måste peka på en bildfil; vi genererar en liten
+     data:-URI med en cirkel, vilket kanske inte stöds beroende på hur
+     TC faktiskt läser den fältet). Guiden är därför byggd för att FALLERA
+     TYST (bara ett meddelande i note-rutan) om något av detta inte stämmer
+     — resten av panelen (offset/rotation/nedladdning/uppladdning) funkar
+     oavsett, med ankare (0,0,0) som reserv om bounding-boxen inte går att
+     hämta.
+     ===================================================================== */
+  async _toggle3dPanel(){
+    const willShow = !this.el.panel3d.classList.contains("dp-show");
+    if(!willShow){ this._close3dPanel(); return; }
     const item = this._currentItem();
     if(!item) return;
+    this.el.panel3d.classList.add("dp-show");
+    this._3dAnchors = null; // { center, min, max } i världskoordinater, eller null
+    this._guideIcons = [];
+    this._setNote3d("Hämtar ankarpunkt (bounding box) för det markerade objektet…");
+    await this._fetch3dAnchor();
+    await this._recompute3d({ updateGuide:true });
+  }
+  _close3dPanel(){
+    this.el.panel3d.classList.remove("dp-show");
+    this._clearGuide3d();
+  }
+  _setNote3d(extra){
+    const base = 'Guiden ritas som fyra hörnpunkter i 3D-vyn (inte den riktiga ritningsbilden — Trimbles API kan inte '
+      + 'rendera texturer live) så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är '
+      + 'bounding-boxen för objektet du har markerat i 3D — flytta/rotera/markera om det markerade objektet om ankaret '
+      + 'hamnar fel. Storleken (bredd/höjd) kommer från kalibreringen (verktyget "Kalibrera"). Efter uppladdning kan du '
+      + 'finjustera ytterligare med Trimble Connects egna "Positionsinställningar" i Modeller-panelen. '
+      + '<b>Experimentellt</b> — testat offline, inte mot en riktig Trimble Connect-miljö än.';
+    this.el.note3d.innerHTML = extra ? `<b>${extra}</b><br><br>${base}` : base;
+  }
+  async _fetch3dAnchor(){
+    if(!tcApi?.viewer?.getObjectBoundingBoxes || !currentSelection?.modelId || currentSelection?.runtimeId==null){
+      this._3dAnchors = { center:{x:0,y:0,z:0}, min:{x:0,y:0,z:0}, max:{x:0,y:0,z:0} };
+      this._setNote3d('Kunde inte hämta bounding box för markerat objekt (ingen aktiv TC-anslutning eller inget objekt markerat) — använder världens origo (0,0,0) som ankare istället.');
+      return;
+    }
+    try{
+      const res = await tcApi.viewer.getObjectBoundingBoxes(currentSelection.modelId, [currentSelection.runtimeId]);
+      const bb = (Array.isArray(res) ? res[0] : res)?.boundingBox || (Array.isArray(res) ? res[0] : res);
+      const min = bb?.min, max = bb?.max;
+      if(!min || !max || typeof min.x!=="number" || typeof max.x!=="number"){
+        throw new Error("Oväntat svarsformat från getObjectBoundingBoxes (se konsolen).");
+      }
+      const center = { x:(min.x+max.x)/2, y:(min.y+max.y)/2, z:(min.z+max.z)/2 };
+      this._3dAnchors = { center, min, max };
+    }catch(err){
+      console.warn("[TC] getObjectBoundingBoxes misslyckades eller hade oväntad form:", err, "— råsvar loggat ovan om tillgängligt.");
+      this._3dAnchors = { center:{x:0,y:0,z:0}, min:{x:0,y:0,z:0}, max:{x:0,y:0,z:0} };
+      this._setNote3d('Kunde inte läsa bounding-boxen för markerat objekt (se webbläsarkonsolen för detaljer) — använder världens origo (0,0,0) som ankare istället. Offset-fälten funkar som vanligt därifrån.');
+    }
+  }
+  _read3dInputs(){
+    const anchorMode = this.el.anchor3d.value; // "center" | "min" | "max"
+    const offset = {
+      x: parseFloat(this.el.x3d.value)||0,
+      y: parseFloat(this.el.y3d.value)||0,
+      z: parseFloat(this.el.z3d.value)||0,
+    };
+    const rotationDeg = parseFloat(this.el.rot3d.value)||0;
+    const tiltDeg = parseFloat(this.el.tilt3d.value)||0;
+    const extraScale = parseFloat(this.el.scale3d.value)||1;
+    this.el.rotVal3d.textContent = rotationDeg.toFixed(0)+"°";
+    this.el.tiltVal3d.textContent = tiltDeg.toFixed(0)+"°";
+    this.el.scaleVal3d.textContent = extraScale.toFixed(2)+"×";
+    return { anchorMode, offset, rotationDeg, tiltDeg, extraScale };
+  }
+  // Räknar om bredd/höjd + full 3D-placering utifrån aktuellt ankare och
+  // panelens fält. Uppdaterar ev. guiden i 3D-vyn om updateGuide är sant
+  // (eller om guide-kryssrutan är ikryssad och en guide redan visas).
+  async _recompute3d({ updateGuide=false } = {}){
+    const item = this._currentItem();
+    if(!item || !this._3dAnchors) return null;
+    const { anchorMode, offset, rotationDeg, tiltDeg, extraScale } = this._read3dInputs();
+    let size;
+    try{
+      size = computeAttachmentPlaneSize(this.engine.scale, this.el.canvas.width, this.el.canvas.height, extraScale);
+    }catch(err){
+      this._setNote3d(err.message);
+      return null;
+    }
+    const anchor = this._3dAnchors[anchorMode] || this._3dAnchors.center;
+    const placement = computePlanePlacement({ anchor, offset, rotationDeg, tiltDeg, widthM:size.widthM, heightM:size.heightM });
+    this._last3d = { item, widthM:size.widthM, heightM:size.heightM, placement };
+    if(updateGuide && this.el.guide3d.checked) await this._updateGuide3d(placement);
+    return this._last3d;
+  }
+  async _updateGuide3d(placement){
+    if(!tcApi?.viewer?.addIcon){
+      this._setNote3d("Kunde inte visa guiden — viewer.addIcon verkar inte finnas i den här TC-miljön/versionen. Resten av panelen funkar ändå.");
+      return;
+    }
+    await this._clearGuide3d();
+    try{
+      const dot = "data:image/svg+xml," + encodeURIComponent(
+        `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='12' cy='12' r='10' fill='#ff3b30' stroke='white' stroke-width='2'/></svg>`);
+      const icons = placement.corners.map((p,i)=>({ id: Date.now()+i, iconPath: dot, position: p, size: 0.3 }));
+      await tcApi.viewer.addIcon(icons);
+      this._guideIcons = icons;
+    }catch(err){
+      console.warn("[TC] addIcon misslyckades (guiden kunde inte visas):", err);
+      this._setNote3d("Kunde inte visa guiden i 3D-vyn (se konsolen) — troligen skiljer sig PointIcon-formatet från vad jag antog. Resten av panelen funkar ändå.");
+    }
+  }
+  async _clearGuide3d(){
+    if(!this._guideIcons?.length || !tcApi?.viewer?.removeIcon) { this._guideIcons=[]; return; }
+    try{ await tcApi.viewer.removeIcon(this._guideIcons); }
+    catch(err){ console.warn("[TC] removeIcon misslyckades:", err); }
+    this._guideIcons = [];
+  }
+  async _download3d(){
+    const res = await this._recompute3d({ updateGuide:false });
+    if(!res) return;
+    const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement);
+    const blob = new Blob([ifcText], { type:"application/x-step" });
+    const baseName = (res.item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${baseName} - 3D-platta.ifc`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }
+  async _upload3d(){
     if(!tcAccessToken){
-      alert("Den här funktionen kräver en aktiv Trimble Connect-anslutning (fungerar inte i testläge).");
+      alert("Den här funktionen kräver en aktiv Trimble Connect-anslutning (fungerar inte i testläge) — använd \"Ladda ner IFC\" istället.");
       return;
     }
-    const scale = this.engine.scale;
-    if(!scale || !scale.pxPerUnit){
-      alert('Ritningen/fotot är inte kalibrerat. Använd verktyget "Kalibrera" i verktygsraden först, så att verklig storlek är känd — sedan går det att skapa en 3D-platta i rätt skala.');
-      return;
-    }
-    const canvasW = this.el.canvas.width, canvasH = this.el.canvas.height;
-    const factorPreview = IFC_UNIT_TO_METERS[scale.unit];
-    if(!factorPreview){
-      alert(`Okänd enhet "${scale.unit}" på kalibreringen — stödjer just nu bara mm, cm, dm, m eller km. Kalibrera om med en av dessa enheter.`);
-      return;
-    }
-    const wPreview = (canvasW/scale.pxPerUnit)*factorPreview, hPreview = (canvasH/scale.pxPerUnit)*factorPreview;
+    const res = await this._recompute3d({ updateGuide:false });
+    if(!res) return;
     const ok = window.confirm(
-      `Skapa en 3D-platta (${wPreview.toFixed(2)} × ${hPreview.toFixed(2)} m) av "${item.name}" och ladda upp den till mappen `
-      + `"${TC_PLACEMENTS_FOLDER_NAME}" i projektet?\n\n`
-      + `EXPERIMENTELL FUNKTION — testad offline men inte mot en riktig Trimble Connect-miljö än.\n\n`
-      + `Efter uppladdning, i Trimble Connect: öppna Modeller-panelen, lägg till den nya filen som modell om den inte redan syns, `
-      + `markera den och välj "Positionsinställningar" för att flytta/rotera/skala in den mot resten av modellen. `
-      + `Klicka sedan på plattan i 3D — den öppnas här precis som vilket annat kopplat objekt som helst.`
+      `Skapa en 3D-platta (${res.widthM.toFixed(2)} × ${res.heightM.toFixed(2)} m) av "${res.item.name}" och ladda upp den till mappen `
+      + `"${TC_PLACEMENTS_FOLDER_NAME}" i projektet?\n\nEXPERIMENTELL FUNKTION — testad offline, inte mot en riktig Trimble Connect-miljö än.`
     );
     if(!ok) return;
-
-    this.el.add3d.disabled = true;
-    const prevTitle = this.el.add3d.title;
-    this.el.add3d.title = "Skapar och laddar upp…";
+    this.el.upload3d.disabled = true;
+    const prevText = this.el.upload3d.textContent;
+    this.el.upload3d.textContent = "Laddar upp…";
     try{
-      const res = await createModelPlaneForAttachment(item, scale, canvasW, canvasH);
-      alert(`Klart! "${res.filename}" (${res.widthM.toFixed(2)} × ${res.heightM.toFixed(2)} m) laddades upp till mappen `
-        + `"${TC_PLACEMENTS_FOLDER_NAME}".\n\nNästa steg i Trimble Connect: Modeller-panelen ▸ lägg till filen som modell om den inte redan syns `
-        + `▸ markera den ▸ "Positionsinställningar" för att placera in den mot modellen.`);
+      const ifcText = buildIfcTextForAttachment(res.item, res.widthM, res.heightM, res.placement);
+      const up = await createModelPlaneForAttachment(res.item, ifcText);
+      alert(`Klart! "${up.filename}" laddades upp till mappen "${TC_PLACEMENTS_FOLDER_NAME}".\n\n`
+        + `Nästa steg i Trimble Connect: Modeller-panelen ▸ lägg till filen som modell om den inte redan syns ▸ markera den ▸ `
+        + `"Positionsinställningar" om du vill finjustera ytterligare.`);
     }catch(err){
       console.error("[TC] kunde inte skapa/ladda upp 3D-platta:", err);
       alert("Kunde inte skapa 3D-plattan: " + err.message);
     }finally{
-      this.el.add3d.disabled = false;
-      this.el.add3d.title = prevTitle;
+      this.el.upload3d.disabled = false;
+      this.el.upload3d.textContent = prevText;
     }
+  }
+  _bind3dPanel(){
+    const onFieldChange = ()=> this._recompute3d({ updateGuide: this.el.guide3d.checked });
+    [this.el.anchor3d, this.el.x3d, this.el.y3d, this.el.z3d].forEach(el=>
+      el.addEventListener("change", onFieldChange));
+    // Skjutreglagen (rotation/lutning/skala) uppdaterar sifferetiketterna
+    // live under dragningen (input-eventet), men räknar bara om guiden när
+    // man släpper (change) — annars hinner addIcon/removeIcon inte med och
+    // panelen känns trög.
+    [this.el.rot3d, this.el.tilt3d, this.el.scale3d].forEach(el=>{
+      el.addEventListener("input", ()=> this._read3dInputs());
+      el.addEventListener("change", onFieldChange);
+    });
+    this.el.guide3d.addEventListener("change", ()=>{
+      if(this.el.guide3d.checked) this._recompute3d({ updateGuide:true });
+      else this._clearGuide3d();
+    });
+    this.el.guideUpdate3d.addEventListener("click", e=>{ e.stopPropagation(); this._recompute3d({ updateGuide:true }); });
+    this.el.download3d.addEventListener("click", e=>{ e.stopPropagation(); this._download3d(); });
+    this.el.upload3d.addEventListener("click", e=>{ e.stopPropagation(); this._upload3d(); });
+    this.el.cancel3d.addEventListener("click", e=>{ e.stopPropagation(); this._close3dPanel(); });
   }
 
   // Lägger till en nykopplad bilaga (uppladdad ELLER länkad från befintligt
@@ -2872,8 +3150,11 @@ class DrawingPreviewWidget{
     });
     ro.observe(this.el.body);
   }
-  _goPrev(){ if(this.index>0){ this.index--; this._renderView(); } }
-  _goNext(){ if(this.index<this._visibleList().length-1){ this.index++; this._renderView(); } }
+  // Byter man bilaga stämmer varken kalibreringen (storlek) eller
+  // ankaret längre mot en ev. öppen 3D-panel, så stäng den (städar bort
+  // guide-punkterna i 3D-vyn också).
+  _goPrev(){ if(this.index>0){ this.index--; this._close3dPanel?.(); this._renderView(); } }
+  _goNext(){ if(this.index<this._visibleList().length-1){ this.index++; this._close3dPanel?.(); this._renderView(); } }
   // Maxzoom höjd från 300% till 1000% på begäran.
   _zoom(delta){ this.zoom = Math.min(10, Math.max(0.4, this.zoom+delta)); this._renderView(); }
 
@@ -3079,6 +3360,7 @@ class DrawingPreviewWidget{
       idx = list.indexOf(item);
     }
     this.index = Math.max(0, idx);
+    this._close3dPanel?.();
     this._renderView();
     // Sätts defensivt innan omarkeringen: OM TC skulle skicka ett nytt
     // viewer.onSelectionChanged-event även för en redan markerad objekt
@@ -3214,6 +3496,24 @@ class DrawingPreviewWidget{
       zoomLevel: document.getElementById("dp-zoom-level"),
       attachList: document.getElementById("dp-attach-list"),
       photoMeta: document.getElementById("dp-photo-meta"),
+
+      panel3d: document.getElementById("dp-3d-panel"),
+      anchor3d: document.getElementById("dp-3d-anchor"),
+      x3d: document.getElementById("dp-3d-x"),
+      y3d: document.getElementById("dp-3d-y"),
+      z3d: document.getElementById("dp-3d-z"),
+      rot3d: document.getElementById("dp-3d-rot"),
+      rotVal3d: document.getElementById("dp-3d-rot-val"),
+      tilt3d: document.getElementById("dp-3d-tilt"),
+      tiltVal3d: document.getElementById("dp-3d-tilt-val"),
+      scale3d: document.getElementById("dp-3d-scale"),
+      scaleVal3d: document.getElementById("dp-3d-scale-val"),
+      guide3d: document.getElementById("dp-3d-guide"),
+      guideUpdate3d: document.getElementById("dp-3d-guide-update"),
+      note3d: document.getElementById("dp-3d-note"),
+      download3d: document.getElementById("dp-3d-download"),
+      upload3d: document.getElementById("dp-3d-upload"),
+      cancel3d: document.getElementById("dp-3d-cancel"),
     };
   }
   _bindEvents(){
@@ -3225,7 +3525,8 @@ class DrawingPreviewWidget{
     this.el.next.addEventListener("click", e=>{e.stopPropagation(); this._goNext();});
     this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addAttachment();});
     this.el.linkExisting.addEventListener("click", e=>{e.stopPropagation(); this.filePicker.open();});
-    this.el.add3d.addEventListener("click", e=>{e.stopPropagation(); this._addToModel();});
+    this.el.add3d.addEventListener("click", e=>{e.stopPropagation(); this._toggle3dPanel();});
+    this._bind3dPanel();
     this.el.fileInput.addEventListener("change", e=>{
       const file = e.target.files?.[0];
       this._onFileChosen(file);
