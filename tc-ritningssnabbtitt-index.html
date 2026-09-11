@@ -121,8 +121,32 @@
   .dp-widthdot.dp-active{ border-color:var(--accent); background:rgba(61,155,255,.15); }
   #dp-ribbon-note{ font-size:10px; color:var(--text-dim); margin-left:auto; align-self:center; max-width:260px; text-align:right; }
 
-  #dp-modal-body{ position:relative; flex:1; overflow:auto; display:flex; align-items:center; justify-content:center; padding:24px; }
-  #dp-modal-canvas-wrap{ position:relative; display:inline-block; box-shadow:0 0 30px rgba(0,0,0,.6); }
+  /* ---------- "Endast för admin"-spärr ---------- */
+  #dp-admin-gate{ position:fixed; inset:0; z-index:500; background:var(--bg);
+    display:flex; align-items:center; justify-content:center; padding:24px; }
+  #dp-admin-gate.dp-hidden{ display:none; }
+  #dp-admin-gate-card{ width:100%; max-width:240px; display:flex; flex-direction:column; gap:10px; }
+  #dp-admin-gate-title{ font-size:15px; font-weight:600; text-align:center; }
+  #dp-admin-gate-sub{ font-size:11px; color:var(--text-dim); text-align:center; }
+  #dp-admin-gate-input{ background:#1c1d20; border:1px solid var(--border); color:var(--text);
+    border-radius:4px; padding:8px 10px; font-size:13px; font-family:inherit; }
+  #dp-admin-gate-input:focus{ border-color:var(--accent); outline:none; }
+  #dp-admin-gate-btn{ padding:8px 10px; }
+  #dp-admin-gate-error{ font-size:11px; color:var(--err); text-align:center; min-height:14px; }
+
+  /* BUGFIX (panorering nådde inte hela den inzoomade bilden): "display:flex;
+     align-items:center; justify-content:center;" på en overflow:auto-behållare
+     är en känd CSS-fälla — när innehållet är större än behållaren räknar
+     webbläsaren ut det scrollbara omfånget SYMMETRISKT kring centreringen,
+     vilket i praktiken gör att man aldrig kan scrolla/panorera till den
+     "första" (topp/vänster-) delen av överflödet, oavsett hur man drar.
+     Fixen är att flytta centreringen från BEHÅLLAREN (justify/align-items)
+     till BARNET (margin:auto på #dp-modal-canvas-wrap) — auto-marginaler på
+     ett flex-barn centrerar likadant när innehållet får plats, men faller
+     tillbaka till normal topp-vänster-förankrad (och alltså FULLT scrollbar)
+     positionering så fort innehållet är större än behållaren. */
+  #dp-modal-body{ position:relative; flex:1; overflow:auto; display:flex; padding:24px; }
+  #dp-modal-canvas-wrap{ position:relative; display:inline-block; margin:auto; box-shadow:0 0 30px rgba(0,0,0,.6); }
   #dp-modal-canvas, #dp-modal-annot{ display:block; }
   #dp-modal-annot{ position:absolute; top:0; left:0; cursor:crosshair; }
   /* Panoreringsverktyg: grab/grabbing-markör istället för rit-korshåret. */
@@ -141,6 +165,9 @@
   .dp-attach-comment{ flex:1 1 auto; min-width:0; background:none; border:1px solid transparent;
     color:var(--text-dim); font-size:11px; padding:3px 5px; border-radius:3px; font-family:inherit; }
   .dp-attach-comment::placeholder{ color:#5a5c60; }
+  .dp-attach-remove{ flex:0 0 auto; background:none; border:none; color:var(--text-dim);
+    cursor:pointer; font-size:13px; padding:2px 4px; border-radius:3px; line-height:1; }
+  .dp-attach-remove:hover{ color:var(--err); background:rgba(224,57,62,.15); }
   .dp-attach-comment:hover{ border-color:var(--border); }
   .dp-attach-comment:focus{ border-color:var(--accent); background:#1c1d20; color:var(--text); outline:none; }
   #dp-attach-empty{ padding:10px 12px; font-size:11px; color:var(--text-dim); }
@@ -156,7 +183,7 @@
   #dp-global-area-filter{ flex:0 1 120px; min-width:0; background:#1c1d20;
     border:1px solid var(--border); color:var(--text); font-size:11px; border-radius:4px; padding:4px 6px; }
 
-  .dp-global-grid{ display:grid; grid-template-columns: minmax(0,1.7fr) minmax(0,0.9fr) minmax(0,1.7fr);
+  .dp-global-grid{ display:grid; grid-template-columns: minmax(0,1.7fr) minmax(0,0.9fr) minmax(0,1.7fr) auto;
     gap:4px 10px; align-items:center; }
   #dp-global-table-head{ padding:5px 12px; flex:0 0 auto; background:var(--panel-2);
     border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
@@ -199,6 +226,18 @@
 </head>
 <body>
 
+<!-- Enkel "Endast för admin"-spärr — se kommentaren vid initAdminGate() i
+     DEL 7 för vad den faktiskt skyddar (och inte). -->
+<div id="dp-admin-gate">
+  <div id="dp-admin-gate-card">
+    <div id="dp-admin-gate-title">🔒 Endast för admin</div>
+    <div id="dp-admin-gate-sub">Ange lösenord för att öppna Quick viewer by VFA.</div>
+    <input type="password" id="dp-admin-gate-input" placeholder="Lösenord" autocomplete="off">
+    <button id="dp-admin-gate-btn" class="dp-btn">Lås upp</button>
+    <div id="dp-admin-gate-error"></div>
+  </div>
+</div>
+
 <div id="app">
   <div id="ext-toolbar">
     Quick viewer by VFA — <b id="ext-project-name">–</b>
@@ -220,6 +259,7 @@
         <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span></div>
         <div class="dp-gth" data-sort="area">Område <span class="dp-sort-arrow"></span></div>
         <div class="dp-gth" data-sort="comment">Kommentar <span class="dp-sort-arrow"></span></div>
+        <div></div>
       </div>
       <div id="dp-global-list-items"></div>
     </div>
@@ -323,6 +363,10 @@
 const TC_CONFIG = {
   MOCK_FALLBACK: true,          // sätt till false när riktiga anrop är verifierade
   MEASURE_UNIT: "mm",           // enhet som visas efter kalibrering
+  // Lösenord för den enkla "Endast för admin"-spärren (se initAdminGate
+  // nedan i DEL 7) — byt till vad ni vill. VIKTIGT: det här är INTE riktig
+  // säkerhet, se kommentaren vid initAdminGate för varför.
+  ADMIN_PASSWORD: "ändra-mig",
   // REST API-region (Core API 2.0). Hämtat från er faktiska konsol-logg
   // (nätverksanrop mot app21.connect.trimble.com = PROD EU-region).
   // VERIFIERA om ni har projekt i andra regioner — giltiga värden enligt
@@ -731,6 +775,30 @@ async function listObjectFileLinks(modelId, guid){
   const links = await tcFetchJson(`/objectlink?${qs.toString()}`);
   const arr = Array.isArray(links) ? links : links?.items || [];
   return arr.filter(l => l.target?.type === "FILE" && l.target?.id);
+}
+
+/* ---------------------------------------------------------------------
+   Ta bort en koppling mellan ett objekt och en kopplad PDF/foto ("soptunna"
+   i bilagelistorna). Tar ENDAST bort Object Link:en — själva filen i
+   Trimble Connect rörs inte (den kan vara en fil som fanns i projektet
+   sen tidigare och bara länkats, inte laddats upp av den här appen).
+   Städar även bort filen ur det projektomfattande indexet (DEL 1d),
+   eftersom det indexet bara håller reda på EN koppling per fil.
+   --------------------------------------------------------------------- */
+async function unlinkAttachment(modelId, guid, fileId){
+  if(!tcAccessToken) throw new Error("Kräver en aktiv Trimble Connect-anslutning.");
+  const links = await listObjectFileLinks(modelId, guid);
+  const matches = links.filter(l => l.target?.id === fileId);
+  for(const l of matches) await deleteObjectLink(l.id);
+  try{
+    const idx = await loadProjectIndex();
+    if(idx.files[fileId]){
+      delete idx.files[fileId];
+      scheduleSaveProjectIndex();
+    }
+  }catch(err){
+    console.warn("[index] kunde inte städa bort fil ur projektindexet:", err);
+  }
 }
 
 /* ---------------------------------------------------------------------
@@ -1172,7 +1240,7 @@ function formatMeasure(px, scale, suffix){
   return `${px.toFixed(0)} px*${suffix||""}`;
 }
 
-function drawAnnotationItem(ctx,w,h,item,selected,scale){
+function drawAnnotationItem(ctx,w,h,item,selected,scale,zoom=1){
   const P = p => ({x:p.x*w, y:p.y*h});
   switch(item.type){
     case "pen": {
@@ -1212,31 +1280,41 @@ function drawAnnotationItem(ctx,w,h,item,selected,scale){
       break;
     }
     case "text": {
+      // Bugfix: font/padding/radavstånd skalas nu med zoom (se getZoom i
+      // AnnotationEngine) istället för att vara fasta pixelvärden — annars
+      // blev texten oläsligt liten vid hög zoom och proportionellt jättestor
+      // vid låg zoom, eftersom canvasen faktiskt förstoras/förminskas (inte
+      // en CSS-transform) medan rutans EGEN position (p.x/p.y via P()) redan
+      // skalade korrekt.
       const p=P({x:item.x,y:item.y});
-      ctx.font="13px Segoe UI, Arial";
+      const fontPx=13*zoom, lineH=16*zoom, pad=4*zoom;
+      ctx.font=`${fontPx}px Segoe UI, Arial`;
       const lines=(item.text||"").split("\n");
-      const lineH=16;
-      const textW=Math.max(20,...lines.map(l=>ctx.measureText(l).width));
+      const textW=Math.max(20*zoom,...lines.map(l=>ctx.measureText(l).width));
       ctx.fillStyle="rgba(255,255,255,.94)";
-      ctx.fillRect(p.x-4,p.y-4,textW+8,lines.length*lineH+8);
+      ctx.fillRect(p.x-pad,p.y-pad,textW+pad*2,lines.length*lineH+pad*2);
       ctx.strokeStyle=item.color; ctx.lineWidth=1;
-      ctx.strokeRect(p.x-4,p.y-4,textW+8,lines.length*lineH+8);
+      ctx.strokeRect(p.x-pad,p.y-pad,textW+pad*2,lines.length*lineH+pad*2);
       ctx.fillStyle="#1a1a1a";
-      lines.forEach((l,i)=>ctx.fillText(l,p.x,p.y+12+i*lineH));
+      lines.forEach((l,i)=>ctx.fillText(l,p.x,p.y+12*zoom+i*lineH));
       break;
     }
     case "callout": {
+      // Samma bugfix som "text" ovan, plus hörnradien (annars ser en kraftigt
+      // inzoomad bubbla ut som ett i det närmaste kantigt rektangel-hörn).
       const anchor=P(item.anchor);
       const bx=item.box.x*w, by=item.box.y*h, bw=item.box.w*w, bh=item.box.h*h;
       const boxCx=bx+bw/2, boxCy=by+bh/2;
+      const fontPx=12*zoom, pad=8*zoom, lineH=15*zoom;
+      const radius=Math.max(2, Math.min(6*zoom, bw/2, bh/2));
       ctx.strokeStyle=item.color; ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.moveTo(anchor.x,anchor.y); ctx.lineTo(boxCx,boxCy); ctx.stroke();
       ctx.fillStyle="rgba(255,255,255,.97)";
-      roundRect(ctx,bx,by,bw,bh,6); ctx.fill();
-      ctx.strokeStyle=item.color; ctx.lineWidth=1.5; roundRect(ctx,bx,by,bw,bh,6); ctx.stroke();
+      roundRect(ctx,bx,by,bw,bh,radius); ctx.fill();
+      ctx.strokeStyle=item.color; ctx.lineWidth=1.5; roundRect(ctx,bx,by,bw,bh,radius); ctx.stroke();
       ctx.fillStyle=item.color; ctx.beginPath(); ctx.arc(anchor.x,anchor.y,3.5,0,Math.PI*2); ctx.fill();
-      ctx.fillStyle="#1a1a1a"; ctx.font="12px Segoe UI, Arial";
-      wrapText(ctx, item.text||"", bx+8, by+16, bw-16, 15);
+      ctx.fillStyle="#1a1a1a"; ctx.font=`${fontPx}px Segoe UI, Arial`;
+      wrapText(ctx, item.text||"", bx+pad, by+pad*2, bw-pad*2, lineH);
       break;
     }
     case "measureDistance": {
@@ -1633,6 +1711,15 @@ class AnnotationEngine{
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.getDrawingId = opts.getDrawingId;
+    // Bugfix (text/pratbubbla blev "konstig" vid zoomning): textstorlek,
+    // padding m.m. i drawAnnotationItem ritas i råa canvas-pixlar. Eftersom
+    // zoom görs genom att faktiskt förstora/förminska canvasens pixelstorlek
+    // (_resizeCanvases), inte via CSS-transform, blev text/bubbla-innehåll
+    // som INTE skalades med förstoringen — ren fast pixelstorlek — oläsligt
+    // litet vid hög zoom och proportionellt jättestort vid låg zoom, medan
+    // själva bubblans låda (som ÄR normaliserad/skalad) skalade korrekt.
+    // getZoom låter render() skala text/padding i samma takt som resten.
+    this.getZoom = opts.getZoom || (()=>1);
     this.saveFlagEl = opts.saveFlagEl || null;
     this.wrapEl = opts.wrapEl || null;
     this.allowSelect = !!opts.allowSelect;
@@ -1900,12 +1987,16 @@ class AnnotationEngine{
     ta.value = item.text || "";
     ta.className = "dp-inline-editor";
     const cw = this.canvas.clientWidth, ch = this.canvas.clientHeight;
+    const zoom = this.getZoom() || 1;
     const left = (item.type==="callout" ? item.box.x : item.x) * cw;
     const top = (item.type==="callout" ? item.box.y : item.y) * ch;
-    const boxW = item.type==="callout" ? item.box.w*cw : 150;
-    const boxH = item.type==="callout" ? item.box.h*ch : 44;
+    const boxW = item.type==="callout" ? item.box.w*cw : 150*zoom;
+    const boxH = item.type==="callout" ? item.box.h*ch : 44*zoom;
     ta.style.left=left+"px"; ta.style.top=top+"px";
     ta.style.width=boxW+"px"; ta.style.height=boxH+"px";
+    // Matchar textstorleken i drawAnnotationItem (samma zoom-skalning) så
+    // redigeringsläget ser ut ungefär som det kommer se ut efter commit.
+    ta.style.fontSize = (12*zoom)+"px";
     ta.style.borderColor=item.color;
     this.wrapEl.appendChild(ta);
     requestAnimationFrame(()=>{ ta.focus(); ta.select(); });
@@ -1937,9 +2028,10 @@ class AnnotationEngine{
 
   render(preview=null){
     const ctx=this.ctx, w=this.canvas.width, h=this.canvas.height;
+    const zoom = this.getZoom() || 1;
     ctx.clearRect(0,0,w,h);
-    this.items.forEach((it,i)=> drawAnnotationItem(ctx,w,h,it, i===this.selectedIndex, this.scale));
-    if(preview) drawAnnotationItem(ctx,w,h,preview,false,this.scale);
+    this.items.forEach((it,i)=> drawAnnotationItem(ctx,w,h,it, i===this.selectedIndex, this.scale, zoom));
+    if(preview) drawAnnotationItem(ctx,w,h,preview,false,this.scale,zoom);
   }
 }
 
@@ -2100,9 +2192,41 @@ class GlobalIndexPanel{
       });
       commentCell.appendChild(comment);
 
-      row.append(nameCell, areaCell, commentCell);
+      // Kolumn 4: "soptunna" — tar bort kopplingen mellan objektet och filen.
+      const removeCell = document.createElement("div");
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "dp-attach-remove";
+      removeBtn.type = "button";
+      removeBtn.title = "Ta bort kopplingen till den här filen (själva filen i Trimble Connect påverkas inte)";
+      removeBtn.textContent = "🗑";
+      removeBtn.addEventListener("click", e=>{
+        e.stopPropagation();
+        this._removeAttachment(fileId, rec);
+      });
+      removeCell.appendChild(removeBtn);
+
+      row.append(nameCell, areaCell, commentCell, removeCell);
       this.el.items.appendChild(row);
     });
+  }
+
+  // Samma "ta bort koppling"-funktion som i bilagelistan för det markerade
+  // objektet (DrawingPreviewWidget._removeAttachment), fast utgår här från
+  // radens EGNA modelId/guid (rec) istället för currentSelection, eftersom
+  // den här listan visar filer oavsett vad som råkar vara markerat just nu.
+  async _removeAttachment(fileId, rec){
+    if(!window.confirm(`Ta bort kopplingen till "${rec.name}"?\n\nSjälva filen i Trimble Connect påverkas inte — bara länken till objektet tas bort.`)) return;
+    try{
+      if(tcAccessToken && rec.modelId && rec.guid){
+        await unlinkAttachment(rec.modelId, rec.guid, fileId);
+      }
+      if(this._idx?.files) delete this._idx.files[fileId];
+    }catch(err){
+      console.error("Kunde inte ta bort kopplingen:", err);
+      alert("Kunde inte ta bort kopplingen: " + err.message);
+      return;
+    }
+    this._renderRows();
   }
 
   _updateSortArrows(){
@@ -2171,6 +2295,7 @@ class DrawingPreviewWidget{
     // /redigeringsläge påslaget (allowSelect) eftersom ribbonen alltid syns.
     this.engine = new AnnotationEngine(this.el.annot, {
       getDrawingId: ()=>this._currentItem()?.id,
+      getZoom: ()=>this.zoom,
       saveFlagEl: this.el.saveFlag,
       allowSelect: true,
       wrapEl: this.el.canvasWrap,
@@ -2506,11 +2631,17 @@ class DrawingPreviewWidget{
       comment.placeholder = "Lägg till kommentar…";
       comment.title = "Kommentar (t.ex. vad fotot är taget på, eller vad ritningen visar)";
 
-      row.append(icon, name, comment);
+      const remove = document.createElement("button");
+      remove.className = "dp-attach-remove";
+      remove.type = "button";
+      remove.title = "Ta bort kopplingen till den här filen (själva filen i Trimble Connect påverkas inte)";
+      remove.textContent = "🗑";
+
+      row.append(icon, name, comment, remove);
       box.appendChild(row);
 
       row.addEventListener("click", e=>{
-        if(e.target === comment) return;
+        if(e.target === comment || e.target === remove) return;
         this._selectAttachment(item);
       });
       comment.addEventListener("click", e=> e.stopPropagation());
@@ -2521,6 +2652,10 @@ class DrawingPreviewWidget{
       comment.addEventListener("blur", ()=>{
         setAttachmentComment(item.id, comment.value.trim(), this.el.saveFlag);
       });
+      remove.addEventListener("click", e=>{
+        e.stopPropagation();
+        this._removeAttachment(item);
+      });
 
       // Läs ev. sparad kommentar asynkront utan att blockera listan.
       getAttachmentComment(item.id).then(text=>{
@@ -2528,6 +2663,28 @@ class DrawingPreviewWidget{
       }).catch(()=>{});
     });
     this._highlightActiveRow();
+  }
+  // "Soptunnan" i bilagelistan — tar bort kopplingen (Object Link) mellan
+  // det markerade objektet och filen. Rör INTE själva filen i Trimble
+  // Connect (den kan vara en fil som fanns där sen tidigare). I fristående
+  // testläge (ingen access token) tas bilagan bara bort ur den lokala
+  // listan, utan något TC-anrop.
+  async _removeAttachment(item){
+    if(!window.confirm(`Ta bort kopplingen till "${item.name}"?\n\nSjälva filen i Trimble Connect påverkas inte — bara länken till det här objektet tas bort.`)) return;
+    try{
+      if(tcAccessToken && currentSelection?.modelId && currentSelection?.guid){
+        await unlinkAttachment(currentSelection.modelId, currentSelection.guid, item.id);
+      }
+    }catch(err){
+      console.error("Kunde inte ta bort kopplingen:", err);
+      alert("Kunde inte ta bort kopplingen: " + err.message);
+      return;
+    }
+    const wasCurrent = this._currentItem()?.id === item.id;
+    this.attachments = this.attachments.filter(a=>a.id!==item.id);
+    if(this.index >= this._visibleList().length) this.index = Math.max(0, this._visibleList().length-1);
+    this._renderAttachList();
+    if(wasCurrent || !this.attachments.length) this._renderView();
   }
   _highlightActiveRow(){
     const current = this._currentItem();
@@ -2714,18 +2871,77 @@ class DrawingPreviewWidget{
 /* =====================================================================
    DEL 7 — INIT
    ===================================================================== */
-const globalIndexPanel = new GlobalIndexPanel();
-globalIndexPanel.show(); // startläge: inget objekt markerat ännu
+// "widget"/"globalIndexPanel" är avsiktligt "let" på modulnivå (inte
+// "const" lokalt i bootApp) eftersom flera funktioner högre upp i filen
+// (t.ex. handleSelectionChanged) refererar till dem som fria variabler —
+// JS löser sådana referenser vid ANROPSTILLFÄLLET, inte vid definitionen,
+// så det räcker att de finns deklarerade i den omslutande modul-scopet
+// innan bootApp() faktiskt körs (dvs. efter att lösenordsspärren öppnats).
+let globalIndexPanel = null;
+let widget = null;
 
-const widget = new DrawingPreviewWidget();
+function bootApp(){
+  globalIndexPanel = new GlobalIndexPanel();
+  globalIndexPanel.show(); // startläge: inget objekt markerat ännu
 
-if(window.WorkspaceAPI){
-  initExtension();
-}else{
-  console.warn("[TC] trimble-connect-workspace-api hittades inte (window.WorkspaceAPI saknas) — kör i fristående testläge.");
-  setStatus("error", "trimble-connect-workspace-api saknas");
-  if(TC_CONFIG.MOCK_FALLBACK) initMockStandalone();
+  widget = new DrawingPreviewWidget();
+
+  if(window.WorkspaceAPI){
+    initExtension();
+  }else{
+    console.warn("[TC] trimble-connect-workspace-api hittades inte (window.WorkspaceAPI saknas) — kör i fristående testläge.");
+    setStatus("error", "trimble-connect-workspace-api saknas");
+    if(TC_CONFIG.MOCK_FALLBACK) initMockStandalone();
+  }
 }
+
+/* ---------------------------------------------------------------------
+   "Endast för admin"-spärr.
+
+   VIKTIGT ATT FÖRSTÅ VAD DET HÄR FAKTISKT SKYDDAR (OCH INTE): det här är
+   en ren klientsidesspärr i denna enda HTML-fil. Lösenordet ligger i
+   klartext i koden (TC_CONFIG.ADMIN_PASSWORD ovan) och kan läsas av vem
+   som helst som öppnar webbläsarens utvecklarverktyg eller visar
+   sidkällan — det här är INTE riktig autentisering. Det skyddar inte
+   heller någon data i Trimble Connect: filerna, kommentarerna och
+   områdestaggarna ligger kvar precis lika åtkomliga som vanligt för alla
+   med behörighet till projektet, oavsett den här spärren (se tidigare
+   svar om var data lagras). Det här är bara en enkel tröskel för att
+   hindra nyfikna/oavsiktliga klick från kollegor som inte ska använda
+   panelen — inte ett sätt att begränsa vem som får se ritningar/foton.
+   --------------------------------------------------------------------- */
+const ADMIN_GATE_SESSION_KEY = "rsst-admin-unlocked";
+function initAdminGate(){
+  const gate = document.getElementById("dp-admin-gate");
+  const input = document.getElementById("dp-admin-gate-input");
+  const btn = document.getElementById("dp-admin-gate-btn");
+  const err = document.getElementById("dp-admin-gate-error");
+
+  let alreadyUnlocked = false;
+  try{ alreadyUnlocked = sessionStorage.getItem(ADMIN_GATE_SESSION_KEY) === "1"; }catch(e){}
+  if(alreadyUnlocked){
+    gate.classList.add("dp-hidden");
+    bootApp();
+    return;
+  }
+
+  const tryUnlock = ()=>{
+    if(input.value === TC_CONFIG.ADMIN_PASSWORD){
+      try{ sessionStorage.setItem(ADMIN_GATE_SESSION_KEY, "1"); }catch(e){}
+      gate.classList.add("dp-hidden");
+      bootApp();
+    }else{
+      err.textContent = "Fel lösenord.";
+      input.value = "";
+      input.focus();
+    }
+  };
+  btn.addEventListener("click", tryUnlock);
+  input.addEventListener("keydown", e=>{ if(e.key==="Enter") tryUnlock(); });
+  input.focus();
+}
+
+initAdminGate();
 </script>
 </body>
 </html>
