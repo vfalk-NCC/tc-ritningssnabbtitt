@@ -296,6 +296,9 @@
   #dp-filepicker-header{ display:flex; align-items:center; gap:8px; padding:10px 14px;
     border-bottom:1px solid var(--border); font-size:12px; flex:0 0 auto; }
   #dp-fp-path{ flex:1; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Syns bara när bläddraren öppnats med ett kindFilter (t.ex. "bara foton"
+     för fristående-foto-flödet) — se ExistingFilePicker.open/_render. */
+  #dp-fp-hint{ flex:0 0 auto; font-size:10.5px; color:var(--text-dim); font-style:italic; }
   #dp-filepicker-list{ flex:1; overflow:auto; padding:6px; }
   .dp-fp-item{ display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:5px;
     cursor:pointer; font-size:13px; user-select:none; }
@@ -553,6 +556,7 @@
   <div id="dp-filepicker-header">
     <button class="dp-btn" id="dp-fp-up" title="Upp en nivå">⬆ Upp</button>
     <span id="dp-fp-path">–</span>
+    <span id="dp-fp-hint" style="display:none;"></span>
     <button class="dp-btn" id="dp-fp-confirm">Lägg till valda</button>
     <button class="dp-btn" id="dp-fp-close">Stäng ✕</button>
   </div>
@@ -940,6 +944,9 @@ function classifyFileKind(name){
   if(VIDEO_EXT.test(name || "")) return "video";
   return "drawing";
 }
+// Läsbara pluralformer av kind — används av ExistingFilePicker (kindFilter-
+// hintraden/tomt-läget) och kan återanvändas där annars kind:kind visas rakt av.
+const KIND_LABEL = { image:"foton", video:"videoklipp", drawing:"PDF-ritningar" };
 
 async function getAttachmentsForObject(sel){
   if(!tcAccessToken){
@@ -2367,6 +2374,7 @@ class ExistingFilePicker{
       path: document.getElementById("dp-fp-path"),
       list: document.getElementById("dp-filepicker-list"),
       up: document.getElementById("dp-fp-up"),
+      hint: document.getElementById("dp-fp-hint"),
       confirm: document.getElementById("dp-fp-confirm"),
       close: document.getElementById("dp-fp-close"),
     };
@@ -2374,8 +2382,18 @@ class ExistingFilePicker{
     this.el.close.addEventListener("click", e=>{ e.stopPropagation(); this.hide(); });
     this.el.confirm.addEventListener("click", e=>{ e.stopPropagation(); this._confirmSelection(); });
   }
-  async open(onPick){
+  // kindFilter (valfri): "image"/"video"/"drawing" — begränsar bläddraren
+  // till bara den filtypen (mappar visas alltid, för navigering). Används
+  // av "📁 Från Trimble Connect…" under fristående foto (kräver GPS/EXIF,
+  // som bara foton har) så man inte kan välja t.ex. en video där och få
+  // ett kryptiskt felmeddelande efteråt — se GlobalIndexPanel-anropet.
+  // Sätts alltid explicit (default null) så ett tidigare flödes filter
+  // aldrig läcker in i nästa öppning av den delade bläddraren.
+  async open(onPick, kindFilter){
     if(onPick) this.onPick = onPick;
+    this.kindFilter = kindFilter || null;
+    this.el.hint.style.display = this.kindFilter ? "" : "none";
+    this.el.hint.textContent = this.kindFilter ? `Visar bara: ${kindIcon(this.kindFilter)} ${KIND_LABEL[this.kindFilter] || this.kindFilter}` : "";
     if(!tcAccessToken){
       alert("Bläddring i Trimble Connect kräver en aktiv anslutning — fungerar inte i fristående testläge.");
       return;
@@ -2431,9 +2449,21 @@ class ExistingFilePicker{
       this.el.list.innerHTML = `<div class="dp-fp-empty">Mappen är tom</div>`;
       return;
     }
+    const matchesKindFilter = it => !this.kindFilter || classifyFileKind(it.name)===this.kindFilter;
     const sorted = items.slice()
+      // Mappar visas alltid (kan innehålla matchande filer längre in) — bara
+      // filer på den HÄR nivån gallras mot ett ev. kindFilter (se open()).
+      .filter(it => it.type==="FOLDER" || matchesKindFilter(it))
       .sort((a,b)=> a.type===b.type ? String(a.name).localeCompare(b.name) : (a.type==="FOLDER" ? -1 : 1));
     this.currentItems = sorted.filter(it => it.type !== "FOLDER");
+    // items.length>0 (kollat ovan) men sorted kan ändå bli tom om ALLT i
+    // mappen gallrades bort av kindFilter (t.ex. en mapp med bara videor när
+    // bläddraren öppnats för "bara foton") — annars skulle listan bara bli
+    // tyst blank, utan förklaring.
+    if(!sorted.length){
+      this.el.list.innerHTML = `<div class="dp-fp-empty">Inga ${this.kindFilter ? (KIND_LABEL[this.kindFilter]||this.kindFilter) : "filer"} i den här mappen</div>`;
+      return;
+    }
     this._fileRows = new Map(); // fil-id -> radelement, för att kunna uppdatera markeringen utan att söka i DOM:en
     this.el.list.innerHTML = "";
     sorted.forEach(it=>{
@@ -4328,7 +4358,11 @@ class GlobalIndexPanel{
     // befintlig fil"-knapp använder (se ExistingFilePicker-kommentaren och
     // DEL 7/bootApp) — bara med en annan callback här, som INTE skapar
     // någon Object Link.
-    this.el.browseStandaloneBtn.addEventListener("click", ()=> existingFilePicker.open(files => this._addExistingStandalonePhotos(files)));
+    // kindFilter "image": det här flödet kräver GPS/EXIF (bara foton har
+    // det, se tcLinkExistingFileStandalone) — filtrerar bort video/PDF ur
+    // bläddraren istället för att låta användaren välja dem och få ett
+    // kryptiskt felmeddelande efteråt (se KIND_LABEL/ExistingFilePicker).
+    this.el.browseStandaloneBtn.addEventListener("click", ()=> existingFilePicker.open(files => this._addExistingStandalonePhotos(files), "image"));
     this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
       th.addEventListener("click", (e)=>{
         // Klick på draghandtaget (kolumnbredd) ska INTE räknas som klick på
