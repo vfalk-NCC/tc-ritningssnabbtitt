@@ -4620,6 +4620,11 @@ class DrawingPreviewWidget{
     this.index = 0;
     this.zoom = 1;
     this.currentObj = null;
+    // Platt, projektomfattande navigeringslista (Föreg./Nästa) — se
+    // _globalNavList/_navigateToGlobalIndex. Byggs om varje _renderView()
+    // (loadProjectIndex() är cachead, så det kostar inget nätverksanrop).
+    this._navList = [];
+    this._navPos = -1;
     this._cacheDom();
     this._bindEvents();
     this._bindPan();
@@ -5087,9 +5092,20 @@ class DrawingPreviewWidget{
   async _renderView(){
     const list = this._visibleList();
     const total = list.length;
-    this.el.counter.textContent = total ? `${this.index+1} / ${total}` : "0 / 0";
-    this.el.prev.disabled = this.index<=0;
-    this.el.next.disabled = this.index>=total-1;
+
+    // Föreg./Nästa bläddrar numera mellan ALLA filer i hela projektet (som
+    // matchar 📄/🖼-filtret ovan) istället för bara det just nu öppnade
+    // objektets egna, ofta väldigt korta, bilagelista — se _globalNavList/
+    // _navigateToGlobalIndex. Räknaren och knapparnas disabled-status byggs
+    // därför på den globala listan/positionen, inte på `list`/`this.index`
+    // (som fortfarande styr VILKEN bilaga som faktiskt visas nedan).
+    this._navList = await this._globalNavList();
+    const curId = this._currentItem()?.id;
+    this._navPos = curId!=null ? this._navList.findIndex(([id])=>id===curId) : -1;
+    const navTotal = this._navList.length;
+    this.el.counter.textContent = navTotal ? `${this._navPos>=0 ? this._navPos+1 : "?"} / ${navTotal}` : "0 / 0";
+    this.el.prev.disabled = this._navPos<=0;
+    this.el.next.disabled = this._navPos<0 || this._navPos>=navTotal-1;
     this.el.zoomLevel.textContent = `${Math.round(this.zoom*100)}%`;
 
     if(!total){
@@ -5168,11 +5184,71 @@ class DrawingPreviewWidget{
     });
     ro.observe(this.el.body);
   }
-  // Byter man bilaga stämmer varken kalibreringen (storlek) eller
-  // ankaret längre mot en ev. öppen 3D-panel, så stäng den (städar bort
-  // guide-punkterna i 3D-vyn också).
-  _goPrev(){ if(this.index>0){ this.index--; this._close3dPanel?.(); this._renderView(); } }
-  _goNext(){ if(this.index<this._visibleList().length-1){ this.index++; this._close3dPanel?.(); this._renderView(); } }
+  // Bygger den platta, projektomfattande listan (Föreg./Nästa) av ALLA
+  // filer i projektindexet — objekt-kopplade OCH fristående foton blandat
+  // — filtrerad efter samma 📄/🖼-filter som redan styr `_visibleList()`,
+  // och sorterad på namn (samma förvalda sortering som "Alla filer"-
+  // tabellen). loadProjectIndex() är cachead (_projectIndexCache) så det
+  // här kostar inget extra nätverksanrop trots att det anropas vid varje
+  // _renderView().
+  async _globalNavList(){
+    let idx;
+    try{ idx = await loadProjectIndex(); }
+    catch(err){ console.warn("[navigering] kunde inte läsa projektindexet:", err); return []; }
+    const entries = Object.entries(idx.files || {});
+    const filtered = this.filter==="all" ? entries : entries.filter(([,r])=>r.kind===this.filter);
+    filtered.sort((a,b)=> String(a[1].name).localeCompare(String(b[1].name), "sv"));
+    return filtered; // [[fileId, rec], ...]
+  }
+
+  // Hoppar till post `pos` i den senast beräknade _navList (se _renderView).
+  // Två vägar:
+  //  1) Filen hör till samma objekt som redan är markerat (flera bilagor på
+  //     samma objekt hamnar ofta intill varandra i listan) — då räcker det
+  //     att byta `this.index` i den redan inlästa `this.attachments` och
+  //     rendera om, utan någon omväg via viewer.setSelection. Det undviker
+  //     också en potentiell fastlåsning: Trimble Connect skickar inte
+  //     säkert något nytt onSelectionChanged-event om man "markerar" ett
+  //     objekt som redan är markerat, och då skulle _pendingFocusFileId
+  //     (väg 2) aldrig konsumeras.
+  //  2) Annars: precis samma väg som ett klick i "Alla filer"-listan
+  //     (GlobalIndexPanel._openFile) — markerar objektet i 3D-vyn (och
+  //     hoppar sedan automatiskt till rätt bilaga via _pendingFocusFileId
+  //     när showForObject körs), eller för ett fristående foto: flyttar
+  //     kameran + native-markören till dess koordinat.
+  async _navigateToGlobalIndex(pos){
+    const entry = this._navList[pos];
+    if(!entry) return;
+    const [fileId, rec] = entry;
+    this._close3dPanel?.();
+
+    if(!rec.standalone && currentSelection
+       && rec.modelId===currentSelection.modelId && rec.runtimeId===currentSelection.runtimeId){
+      const idx = this.attachments.findIndex(a=>a.id===fileId);
+      if(idx>=0){
+        if(this.filter!=="all" && this.attachments[idx].kind!==this.filter){
+          this.filter = "all";
+          this.el.filterBtns.querySelectorAll("[data-filter]").forEach(b=>
+            b.classList.toggle("dp-active", b.dataset.filter==="all"));
+        }
+        this.index = idx;
+        this._renderView();
+        return;
+      }
+    }
+
+    if(!globalIndexPanel){
+      console.warn("[navigering] globalIndexPanel saknas — kan inte hoppa till nästa/föregående fil.");
+      return;
+    }
+    await globalIndexPanel._openFile(fileId, rec);
+  }
+
+  // Föreg./Nästa bläddrar nu mellan ALLA filer i hela projektet (den
+  // platta _navList), inte bara det just nu öppnade objektets egna
+  // bilagor — se _globalNavList/_navigateToGlobalIndex ovan.
+  _goPrev(){ if(this._navPos>0) this._navigateToGlobalIndex(this._navPos-1); }
+  _goNext(){ if(this._navPos>=0 && this._navPos<this._navList.length-1) this._navigateToGlobalIndex(this._navPos+1); }
   // Maxzoom höjd från 300% till 1000% på begäran.
   _zoom(delta){ this.zoom = Math.min(10, Math.max(0.4, this.zoom+delta)); this._renderView(); }
 
