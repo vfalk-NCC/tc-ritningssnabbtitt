@@ -198,6 +198,22 @@
   #dp-load-progress-fill.dp-indeterminate{ width:40% !important; animation:dp-load-indeterminate 1.1s ease-in-out infinite; }
   @keyframes dp-load-indeterminate{ 0%{ margin-left:0%; } 50%{ margin-left:60%; } 100%{ margin-left:0%; } }
 
+  /* 1-100%-laddningsindikator för "📷 Foto utan koppling…" (flera foton på
+     en gång, se GlobalIndexPanel._uploadStandalonePhotos/_setUploadProgress)
+     — samma stapelstil som dp-load-progress ovan, men inline i verktygsraden
+     istället för en overlay ovanpå en bild (det finns ingen enskild bild att
+     lägga en overlay på här — man laddar upp FLERA på en gång). Dold helt
+     annars (style="display:none" i HTML, se dp-global-list-filter).
+     Procenten viktas mot filstorlek (summan av redan uppladdade filers bytes
+     genom totala bytes i hela urvalet) — så en stor bild bidrar mer till
+     stapeln än en liten, istället för att bara räkna "fil 2 av 5". */
+  #dp-standalone-upload-progress{ display:flex; align-items:center; gap:8px; padding:4px 2px 2px;
+    font-size:10.5px; color:var(--text-dim); }
+  #dp-standalone-upload-bar{ width:160px; height:6px; border-radius:3px; background:var(--panel-2);
+    border:1px solid var(--border); overflow:hidden; flex:0 0 auto; }
+  #dp-standalone-upload-fill{ height:100%; width:0%; background:var(--accent); border-radius:3px;
+    transition:width .15s linear; }
+
   /* ---------- Bilagelista (filnamn + kommentar, klick väljer & markerar i 3D) ---------- */
   #dp-attach-list{ max-height:110px; overflow-y:auto; flex:0 0 auto;
     background:var(--panel-2); border-bottom:1px solid var(--border); }
@@ -387,6 +403,10 @@
         <button class="dp-btn" id="dp-global-upload-standalone-btn" title="Ladda upp ett eller flera foton från din dator utan att koppla dem till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📷 Foto utan koppling…</button>
         <input type="file" id="dp-standalone-file-input" accept="image/*" multiple style="display:none;">
         <button class="dp-btn" id="dp-global-browse-standalone-btn" title="Välj ett foto eller videoklipp som redan finns i Trimble Connect, utan att koppla det till något 3D-objekt — foton zoomar 3D-kameran till sin GPS-koordinat när du klickar på dem i listan, video spelas bara upp">📁 Från Trimble Connect…</button>
+      </div>
+      <div id="dp-standalone-upload-progress" style="display:none;">
+        <div id="dp-standalone-upload-bar"><div id="dp-standalone-upload-fill"></div></div>
+        <span id="dp-standalone-upload-text"></span>
       </div>
       <div id="dp-global-table-head" class="dp-global-grid">
         <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="name"></span></div>
@@ -625,7 +645,7 @@
    "YYYY-MM-DD HH:MM" i svensk tid (CET/CEST), satt av Claude vid varje
    leverad uppdatering.
    ===================================================================== */
-const APP_VERSION = "2026-09-14 17:08";
+const APP_VERSION = "2026-09-14 18:17";
 document.getElementById("ext-version").textContent = `(${APP_VERSION})`;
 
 /* =====================================================================
@@ -4344,6 +4364,9 @@ class GlobalIndexPanel{
       uploadStandaloneBtn: document.getElementById("dp-global-upload-standalone-btn"),
       standaloneFileInput: document.getElementById("dp-standalone-file-input"),
       browseStandaloneBtn: document.getElementById("dp-global-browse-standalone-btn"),
+      uploadProgress: document.getElementById("dp-standalone-upload-progress"),
+      uploadProgressFill: document.getElementById("dp-standalone-upload-fill"),
+      uploadProgressText: document.getElementById("dp-standalone-upload-text"),
     };
     this._idx = null; // senast inlästa projektindex (cachead referens, se loadProjectIndex)
     this._standaloneMarkerIds = []; // id:n för den native 3D-markör (korsformad linje-guide) som just nu visar var senast öppnade fristående foto är taget, se _showStandaloneMarker
@@ -4480,6 +4503,17 @@ class GlobalIndexPanel{
   // tcUploadStandalonePhoto). Körs sekventiellt (inte Promise.all) så
   // statusraden kan visa en tydlig "X/Y"-räknare och så att ett enstaka
   // misslyckat foto inte stoppar resten.
+  //
+  // 1-100%-STAPEL: TC:s uppladdnings-API (uploadFileToFolder, se DEL 1a) ger
+  // ingen byte-för-byte-återkoppling under själva PUT-anropet (det görs med
+  // fetch, som — till skillnad från nedladdning, se downloadAttachmentBlob —
+  // saknar tillförlitligt stöd för uppladdnings-progress i alla webbläsare;
+  // att byta till XMLHttpRequest bara för det här hade rört vid den nyligen
+  // felsökta multipart-uppladdningslogiken i onödan, se BUGFIX-kommentaren
+  // där). Stapeln viktas istället mot FILSTORLEK: hur många bytes av HELA
+  // urvalet som redan är helt uppladdade, delat på totalen — så fem små
+  // foton och ett stort RAW-foto ger en rättvisande stapel, inte bara ett
+  // naivt "fil 2 av 6" (=33%) även om fil 2 råkar vara 90% av datamängden.
   async _uploadStandalonePhotos(){
     const input = this.el.standaloneFileInput;
     const files = [...(input.files || [])];
@@ -4489,7 +4523,10 @@ class GlobalIndexPanel{
     const btn = this.el.uploadStandaloneBtn;
     const prevText = btn.textContent;
     btn.disabled = true;
+    const totalBytes = files.reduce((sum,f)=> sum + (f.size||0), 0);
+    let doneBytes = 0;
     let ok = 0, noCoord = 0, failed = 0;
+    this._setUploadProgress(0, files.length, 0);
     for(let i=0;i<files.length;i++){
       btn.textContent = `Laddar upp… (${i+1}/${files.length})`;
       try{
@@ -4500,15 +4537,36 @@ class GlobalIndexPanel{
         failed++;
         console.error("[foto] kunde inte ladda upp fristående foto:", files[i].name, err);
       }
+      doneBytes += (files[i].size||0);
+      // totalBytes===0 skulle bara kunna hända om alla filer hade size 0
+      // (t.ex. i ett testmocklat filobjekt) — då faller stapeln tillbaka på
+      // antal-baserad procent istället för att dela med noll.
+      const pct = totalBytes>0 ? Math.round((doneBytes/totalBytes)*100) : Math.round(((i+1)/files.length)*100);
+      this._setUploadProgress(pct, files.length, i+1);
     }
     btn.disabled = false;
     btn.textContent = prevText;
+    this._hideUploadProgress();
 
     const parts = [`${ok} av ${files.length} foto(n) uppladdade.`];
     if(noCoord) parts.push(`${noCoord} st hade ingen GPS-data i bilden och går därför inte att zooma till.`);
     if(failed) parts.push(`${failed} st misslyckades (se konsolen, F12).`);
     alert(parts.join(" "));
     await this.refresh();
+  }
+  // pct: 0-100 (heltal). count/total: visas som "3/7" bredvid procenten så
+  // man ser BÅDE hur långt stapeln kommit och exakt vilket foto det gäller
+  // just nu — samma kombination som knapptexten redan visade.
+  _setUploadProgress(pct, total, count){
+    const clamped = Math.max(0, Math.min(100, pct));
+    this.el.uploadProgress.style.display = "flex";
+    this.el.uploadProgressFill.style.width = clamped + "%";
+    this.el.uploadProgressText.textContent = total>1 ? `${clamped}% (${count}/${total})` : `${clamped}%`;
+  }
+  _hideUploadProgress(){
+    this.el.uploadProgress.style.display = "none";
+    this.el.uploadProgressFill.style.width = "0%";
+    this.el.uploadProgressText.textContent = "";
   }
 
   // "📁 Från Trimble Connect…"-knappen: samma resultat som "📷 Foto utan
@@ -4873,7 +4931,7 @@ class GlobalIndexPanel{
         // ändå, även om Z skulle vara någon meter fel. upDirection sätts
         // till world-Y (=Norr, se N/E-konventionen ovan) så norr hamnar
         // uppåt i bilden, ungefär som på en karta.
-        const TOP_VIEW_HEIGHT = 25; // meter rakt ovanför koordinaten
+        const TOP_VIEW_HEIGHT = 50; // meter rakt ovanför koordinaten
         const position = { x: target.x, y: target.y, z: target.z + TOP_VIEW_HEIGHT };
         try{
           await tcApi.viewer.setCamera(
