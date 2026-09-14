@@ -386,7 +386,7 @@
         <button class="dp-btn" id="dp-global-zones-btn" title="Hantera zoner — automatisk områdestaggning av foton utifrån deras GPS-koordinat (SWEREF99 20 15)">📍 Zoner…</button>
         <button class="dp-btn" id="dp-global-upload-standalone-btn" title="Ladda upp ett eller flera foton från din dator utan att koppla dem till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📷 Foto utan koppling…</button>
         <input type="file" id="dp-standalone-file-input" accept="image/*" multiple style="display:none;">
-        <button class="dp-btn" id="dp-global-browse-standalone-btn" title="Välj ett foto som redan finns i Trimble Connect, utan att koppla det till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📁 Från Trimble Connect…</button>
+        <button class="dp-btn" id="dp-global-browse-standalone-btn" title="Välj ett foto eller videoklipp som redan finns i Trimble Connect, utan att koppla det till något 3D-objekt — foton zoomar 3D-kameran till sin GPS-koordinat när du klickar på dem i listan, video spelas bara upp">📁 Från Trimble Connect…</button>
       </div>
       <div id="dp-global-table-head" class="dp-global-grid">
         <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="name"></span></div>
@@ -624,7 +624,7 @@
    behöva gräva i konsolen eller jämföra filinnehåll för hand. Format:
    "YYYY-MM-DD HH:MM" (UTC), satt av Claude vid varje leverad uppdatering.
    ===================================================================== */
-const APP_VERSION = "2026-09-14 14:05 UTC";
+const APP_VERSION = "2026-09-14 14:41 UTC";
 document.getElementById("ext-version").textContent = `(${APP_VERSION})`;
 
 /* =====================================================================
@@ -1479,25 +1479,31 @@ async function tcLinkExistingFileStandalone(file){
   if(!tcAccessToken){
     throw new Error("Kräver en aktiv Trimble Connect-anslutning — går inte att bläddra i testläge.");
   }
-  if(!IMAGE_EXT.test(file.name || "")){
-    throw new Error(`"${file.name || "filen"}" verkar inte vara en bildfil.`);
+  const kind = classifyFileKind(file.name);
+  if(kind!=="image" && kind!=="video"){
+    throw new Error(`"${file.name || "filen"}" verkar inte vara ett foto eller videoklipp.`);
   }
+  // Bara foton har EXIF/GPS att läsa ut — video hämtas aldrig som blob här
+  // (kan vara hundratals MB, och skulle ändå inte innehålla GPS-data i
+  // parseExifDateAndGps mening), utan registreras direkt utan koordinat.
   let exif = null;
-  try{
-    const blob = await downloadAttachmentBlob(file.id, file.versionId);
-    if(blob) exif = parseExifDateAndGps(await blob.arrayBuffer());
-  }catch(err){
-    console.warn("[foto] kunde inte hämta/läsa EXIF ur befintlig fil:", file.name, err);
+  if(kind==="image"){
+    try{
+      const blob = await downloadAttachmentBlob(file.id, file.versionId);
+      if(blob) exif = parseExifDateAndGps(await blob.arrayBuffer());
+    }catch(err){
+      console.warn("[foto] kunde inte hämta/läsa EXIF ur befintlig fil:", file.name, err);
+    }
   }
 
   const sweref = (exif?.lat!=null && exif?.lon!=null) ? wgs84ToSweref99_20_15(exif.lat, exif.lon, exif.alt) : null;
   const capturedDate = exif?.dateIso || (file.createdOn ? new Date(file.createdOn).toISOString() : null);
-  const rec = await recordStandaloneInIndex({ id: file.id, name: file.name, versionId: file.versionId }, sweref, capturedDate);
+  const rec = await recordStandaloneInIndex({ id: file.id, name: file.name, versionId: file.versionId }, sweref, capturedDate, kind);
   if(sweref){
     try{ await autoTagZoneForFile(file.id, sweref); }
     catch(err){ console.warn("[foto] kunde inte auto-tagga befintligt fristående foto mot zoner:", file.id, err); }
   }
-  return { fileId: file.id, name: file.name, hasCoord: !!sweref, rec };
+  return { fileId: file.id, name: file.name, kind, hasCoord: !!sweref, rec };
 }
 
 /* =====================================================================
@@ -2394,18 +2400,25 @@ class ExistingFilePicker{
     this.el.close.addEventListener("click", e=>{ e.stopPropagation(); this.hide(); });
     this.el.confirm.addEventListener("click", e=>{ e.stopPropagation(); this._confirmSelection(); });
   }
-  // kindFilter (valfri): "image"/"video"/"drawing" — begränsar bläddraren
-  // till bara den filtypen (mappar visas alltid, för navigering). Används
-  // av "📁 Från Trimble Connect…" under fristående foto (kräver GPS/EXIF,
-  // som bara foton har) så man inte kan välja t.ex. en video där och få
-  // ett kryptiskt felmeddelande efteråt — se GlobalIndexPanel-anropet.
-  // Sätts alltid explicit (default null) så ett tidigare flödes filter
-  // aldrig läcker in i nästa öppning av den delade bläddraren.
+  // kindFilter (valfri): "image"/"video"/"drawing", ELLER en array av flera
+  // ("image"/"video" t.ex.) — begränsar bläddraren till bara de filtyperna
+  // (mappar visas alltid, för navigering). Används t.ex. av "📁 Från
+  // Trimble Connect…" under fristående foto/video (bara foton läser
+  // GPS/EXIF, video registreras utan koordinat) så man inte kan välja t.ex.
+  // en PDF-ritning där och få ett kryptiskt felmeddelande efteråt — se
+  // GlobalIndexPanel-anropet. Sätts alltid explicit (default null) så ett
+  // tidigare flödes filter aldrig läcker in i nästa öppning av den delade
+  // bläddraren. _kinds() normaliserar till en array (eller null) åt både
+  // open() och _render().
+  _kinds(){ return this.kindFilter ? (Array.isArray(this.kindFilter) ? this.kindFilter : [this.kindFilter]) : null; }
   async open(onPick, kindFilter){
     if(onPick) this.onPick = onPick;
     this.kindFilter = kindFilter || null;
-    this.el.hint.style.display = this.kindFilter ? "" : "none";
-    this.el.hint.textContent = this.kindFilter ? `Visar bara: ${kindIcon(this.kindFilter)} ${KIND_LABEL[this.kindFilter] || this.kindFilter}` : "";
+    const kinds = this._kinds();
+    this.el.hint.style.display = kinds ? "" : "none";
+    this.el.hint.textContent = kinds
+      ? `Visar bara: ${kinds.map(k=>`${kindIcon(k)} ${KIND_LABEL[k] || k}`).join(" + ")}`
+      : "";
     if(!tcAccessToken){
       alert("Bläddring i Trimble Connect kräver en aktiv anslutning — fungerar inte i fristående testläge.");
       return;
@@ -2461,7 +2474,8 @@ class ExistingFilePicker{
       this.el.list.innerHTML = `<div class="dp-fp-empty">Mappen är tom</div>`;
       return;
     }
-    const matchesKindFilter = it => !this.kindFilter || classifyFileKind(it.name)===this.kindFilter;
+    const kinds = this._kinds();
+    const matchesKindFilter = it => !kinds || kinds.includes(classifyFileKind(it.name));
     const sorted = items.slice()
       // Mappar visas alltid (kan innehålla matchande filer längre in) — bara
       // filer på den HÄR nivån gallras mot ett ev. kindFilter (se open()).
@@ -2469,11 +2483,12 @@ class ExistingFilePicker{
       .sort((a,b)=> a.type===b.type ? String(a.name).localeCompare(b.name) : (a.type==="FOLDER" ? -1 : 1));
     this.currentItems = sorted.filter(it => it.type !== "FOLDER");
     // items.length>0 (kollat ovan) men sorted kan ändå bli tom om ALLT i
-    // mappen gallrades bort av kindFilter (t.ex. en mapp med bara videor när
-    // bläddraren öppnats för "bara foton") — annars skulle listan bara bli
-    // tyst blank, utan förklaring.
+    // mappen gallrades bort av kindFilter (t.ex. en mapp med bara ritningar
+    // när bläddraren öppnats för "bara foton/video") — annars skulle listan
+    // bara bli tyst blank, utan förklaring.
     if(!sorted.length){
-      this.el.list.innerHTML = `<div class="dp-fp-empty">Inga ${this.kindFilter ? (KIND_LABEL[this.kindFilter]||this.kindFilter) : "filer"} i den här mappen</div>`;
+      const label = kinds ? kinds.map(k=>KIND_LABEL[k]||k).join(" eller ") : "filer";
+      this.el.list.innerHTML = `<div class="dp-fp-empty">Inga ${label} i den här mappen</div>`;
       return;
     }
     this._fileRows = new Map(); // fil-id -> radelement, för att kunna uppdatera markeringen utan att söka i DOM:en
@@ -2633,11 +2648,11 @@ async function recordInIndex(sel, item){
 // kameran till sweref istället för att markera ett objekt) och
 // _removeAttachment vet att den inte ska försöka ta bort en Object Link
 // som aldrig fanns.
-async function recordStandaloneInIndex(item, sweref, capturedDate){
+async function recordStandaloneInIndex(item, sweref, capturedDate, kind){
   const idx = await loadProjectIndex();
   const prev = idx.files[item.id];
   idx.files[item.id] = {
-    name: item.name, kind: "image", versionId: item.versionId || null,
+    name: item.name, kind: kind || prev?.kind || "image", versionId: item.versionId || null,
     modelId: null, guid: null, runtimeId: null, objectName: "",
     standalone: true, updatedAt: new Date().toISOString(),
     area: prev?.area || "", areaAuto: prev?.areaAuto || false, comment: prev?.comment || "",
@@ -4370,11 +4385,13 @@ class GlobalIndexPanel{
     // befintlig fil"-knapp använder (se ExistingFilePicker-kommentaren och
     // DEL 7/bootApp) — bara med en annan callback här, som INTE skapar
     // någon Object Link.
-    // kindFilter "image": det här flödet kräver GPS/EXIF (bara foton har
-    // det, se tcLinkExistingFileStandalone) — filtrerar bort video/PDF ur
-    // bläddraren istället för att låta användaren välja dem och få ett
-    // kryptiskt felmeddelande efteråt (se KIND_LABEL/ExistingFilePicker).
-    this.el.browseStandaloneBtn.addEventListener("click", ()=> existingFilePicker.open(files => this._addExistingStandalonePhotos(files), "image"));
+    // kindFilter ["image","video"]: det här flödet stödjer foton (läser
+    // GPS/EXIF, se tcLinkExistingFileStandalone) OCH videoklipp (registreras
+    // utan koordinat, går inte att zooma till men fungerar annars precis
+    // som ett fristående foto) — filtrerar bort PDF-ritningar ur bläddraren
+    // istället för att låta användaren välja en sådan och få ett kryptiskt
+    // felmeddelande efteråt (se KIND_LABEL/ExistingFilePicker).
+    this.el.browseStandaloneBtn.addEventListener("click", ()=> existingFilePicker.open(files => this._addExistingStandalonePhotos(files), ["image","video"]));
     this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
       th.addEventListener("click", (e)=>{
         // Klick på draghandtaget (kolumnbredd) ska INTE räknas som klick på
@@ -4495,31 +4512,35 @@ class GlobalIndexPanel{
 
   // "📁 Från Trimble Connect…"-knappen: samma resultat som "📷 Foto utan
   // koppling…" ovan (en eller flera fristående, ej objekt-kopplade
-  // radposter med GPS-koordinat), men för foton som REDAN finns i
-  // projektet — väljs via den delade filbläddraren (existingFilePicker,
-  // som stödjer Ctrl/Shift-flerval) istället för att laddas upp från
-  // datorn. Se tcLinkExistingFileStandalone. files är alltid en lista
-  // (även vid ett enda valt foto, se ExistingFilePicker).
+  // radposter), men för foton/videoklipp som REDAN finns i projektet —
+  // väljs via den delade filbläddraren (existingFilePicker, som stödjer
+  // Ctrl/Shift-flerval, öppnad med kindFilter ["image","video"] ovan)
+  // istället för att laddas upp från datorn. Se tcLinkExistingFileStandalone.
+  // files är alltid en lista (även vid ett enda valt foto/klipp, se
+  // ExistingFilePicker). Video saknar per definition GPS-koordinat — det
+  // räknas INTE som "noCoord" (som är till för foton som OVÄNTAT saknar
+  // GPS i sin EXIF), annars skulle varje enskild video trigga samma
+  // "gick inte att zooma till"-varning som ett trasigt foto.
   async _addExistingStandalonePhotos(files){
     if(!files?.length) return;
     let ok = 0, noCoord = 0, failed = 0;
     for(const file of files){
       try{
-        const { hasCoord } = await tcLinkExistingFileStandalone(file);
+        const { hasCoord, kind } = await tcLinkExistingFileStandalone(file);
         ok++;
-        if(!hasCoord) noCoord++;
+        if(kind!=="video" && !hasCoord) noCoord++;
       }catch(err){
         failed++;
-        console.error("[foto] kunde inte lägga till befintligt fristående foto:", file?.name, err);
+        console.error("[foto/video] kunde inte lägga till befintlig fristående fil:", file?.name, err);
       }
     }
     await this.refresh();
     if(files.length===1){
-      if(failed) alert("Kunde inte lägga till fotot: " + (failed ? "se konsolen (F12) för detaljer." : ""));
+      if(failed) alert("Kunde inte lägga till filen: se konsolen (F12) för detaljer.");
       else if(noCoord) alert(`"${files[0].name}" lades till, men hade ingen GPS-data i bilden — går därför inte att zooma till i 3D-vyn.`);
     }else{
-      const parts = [`${ok} av ${files.length} foto(n) tillagda.`];
-      if(noCoord) parts.push(`${noCoord} st hade ingen GPS-data i bilden och går därför inte att zooma till.`);
+      const parts = [`${ok} av ${files.length} fil(er) tillagda.`];
+      if(noCoord) parts.push(`${noCoord} foto hade ingen GPS-data och går därför inte att zooma till.`);
       if(failed) parts.push(`${failed} st misslyckades (se konsolen, F12).`);
       alert(parts.join(" "));
     }
@@ -4644,14 +4665,15 @@ class GlobalIndexPanel{
       // foto utan objekt-koppling, zoomar kameran till dess GPS-koordinat).
       const nameCell = document.createElement("div");
       nameCell.className = "dp-global-cell-name";
+      const kindWord = rec.kind==="video" ? "videoklippet" : "fotots";
       nameCell.title = rec.standalone
-        ? (rec.sweref ? "Klicka för att zooma till fotots koordinat i 3D-vyn" : "Inget objekt kopplat, och ingen GPS-koordinat hittades i bilden — inget att zooma till")
+        ? (rec.sweref ? `Klicka för att zooma till ${kindWord} koordinat i 3D-vyn` : (rec.kind==="video" ? "Videoklipp utan objekt-koppling — klicka för att öppna och titta på klippet" : "Inget objekt kopplat, och ingen GPS-koordinat hittades i bilden — inget att zooma till"))
         : "Klicka för att markera objektet i 3D-vyn";
       const nameRow = document.createElement("div");
       nameRow.className = "dp-attach-namerow";
       const icon = document.createElement("span");
       icon.className = "dp-attach-icon";
-      icon.textContent = rec.standalone ? "📍" : kindIcon(rec.kind);
+      icon.textContent = (rec.standalone && rec.sweref) ? "📍" : kindIcon(rec.kind);
       const name = document.createElement("span");
       name.className = "dp-attach-name";
       name.textContent = rec.name;
@@ -4659,8 +4681,9 @@ class GlobalIndexPanel{
       nameRow.append(icon, name);
       const objName = document.createElement("span");
       objName.className = "dp-attach-objname";
+      const standaloneKindLabel = rec.kind==="video" ? "fristående video" : "fristående foto";
       objName.textContent = rec.standalone
-        ? (rec.sweref ? `fristående foto — N ${rec.sweref.N} E ${rec.sweref.E}${typeof rec.sweref.Z==="number" ? " Z "+rec.sweref.Z : ""}` : "fristående foto — ingen GPS-koordinat")
+        ? (rec.sweref ? `${standaloneKindLabel} — N ${rec.sweref.N} E ${rec.sweref.E}${typeof rec.sweref.Z==="number" ? " Z "+rec.sweref.Z : ""}` : `${standaloneKindLabel} — ingen GPS-koordinat`)
         : (rec.objectName ? `objekt: ${rec.objectName}` : "");
       nameCell.append(nameRow, objName);
       nameCell.addEventListener("click", ()=> this._openFile(fileId, rec));
@@ -4815,7 +4838,13 @@ class GlobalIndexPanel{
   // också, precis som ett klick på en objekt-kopplad fil gör.
   async _openStandalonePhoto(fileId, rec){
     if(!rec.sweref){
-      alert(`"${rec.name}" har ingen sparad GPS-koordinat (hittades inte i bildens EXIF-data vid uppladdning), så det går inte att zooma till den i 3D-vyn. Du kan fortfarande öppna och titta på fotot.`);
+      // Video har per definition ingen GPS-koordinat (ingen EXIF att läsa
+      // ur en videofil) — det är alltså det FÖRVÄNTADE läget, inte ett fel
+      // att varna för varje gång man öppnar ett klipp, till skillnad från
+      // ett foto som oväntat saknar GPS i sin EXIF.
+      if(rec.kind!=="video"){
+        alert(`"${rec.name}" har ingen sparad GPS-koordinat (hittades inte i bildens EXIF-data vid uppladdning), så det går inte att zooma till den i 3D-vyn. Du kan fortfarande öppna och titta på fotot.`);
+      }
       this._clearStandaloneMarker();
     } else {
       // Antagande: modellens X-axel = Easting (E), Y-axel = Northing (N),
@@ -4856,7 +4885,7 @@ class GlobalIndexPanel{
     currentSelection = null;
     widget.showForObject({
       name: rec.name, guid: null,
-      attachments: [{ kind: "image", id: fileId, versionId: rec.versionId, name: rec.name,
+      attachments: [{ kind: rec.kind || "image", id: fileId, versionId: rec.versionId, name: rec.name,
         capturedAt: rec.capturedDate ? new Date(rec.capturedDate).toLocaleDateString("sv-SE") : "–" }],
     });
   }
