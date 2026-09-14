@@ -264,6 +264,36 @@
   .dp-fp-item:hover{ background:#333; }
   .dp-fp-item .ic{ width:18px; text-align:center; flex:0 0 auto; }
   .dp-fp-empty{ color:var(--text-dim); font-size:12px; padding:20px; text-align:center; }
+
+  /* ---------- Zoner (automatisk områdestaggning av foton via SWEREF99) ---------- */
+  #dp-zones-panel{ position:fixed; inset:8% 15%; min-width:320px; max-width:640px; margin:0 auto;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px; z-index:150;
+    display:none; flex-direction:column; box-shadow:0 10px 40px rgba(0,0,0,.6); }
+  #dp-zones-panel.dp-visible{ display:flex; }
+  #dp-zones-header{ display:flex; align-items:center; gap:8px; padding:10px 14px;
+    border-bottom:1px solid var(--border); font-size:13px; font-weight:600; flex:0 0 auto; }
+  #dp-zones-header span{ flex:1; }
+  #dp-zones-body{ flex:1 1 auto; overflow:auto; padding:10px 14px; display:flex; flex-direction:column; gap:12px; }
+  #dp-zones-list{ display:flex; flex-direction:column; gap:6px; }
+  .dp-zone-row{ display:flex; align-items:center; gap:8px; padding:6px 8px; background:#1c1d20;
+    border:1px solid var(--border); border-radius:5px; font-size:12px; }
+  .dp-zone-row .dp-zone-name{ flex:1; font-weight:600; }
+  .dp-zone-row .dp-zone-count{ color:var(--text-dim); }
+  #dp-zones-empty{ color:var(--text-dim); font-size:12px; padding:4px 0; }
+  #dp-zone-form{ border-top:1px solid var(--border); padding-top:10px; display:flex; flex-direction:column; gap:8px; }
+  #dp-zone-form h5{ margin:0; font-size:12px; color:var(--text); }
+  #dp-zone-name-input{ background:#1c1d20; border:1px solid var(--border); border-radius:5px; color:var(--text);
+    padding:6px 8px; font-size:12px; }
+  #dp-zone-points{ display:flex; flex-direction:column; gap:6px; }
+  .dp-zone-point-row{ display:flex; align-items:center; gap:6px; }
+  .dp-zone-point-row input{ width:100px; background:#1c1d20; border:1px solid var(--border); border-radius:4px;
+    color:var(--text); padding:5px 6px; font-size:12px; }
+  .dp-zone-point-row .dp-zone-point-label{ width:52px; color:var(--text-dim); font-size:11px; }
+  .dp-zone-point-row .dp-zone-point-remove{ margin-left:auto; }
+  #dp-zone-form-actions{ display:flex; gap:8px; flex-wrap:wrap; }
+  #dp-zones-footer{ border-top:1px solid var(--border); padding:10px 14px; display:flex; gap:8px;
+    align-items:center; flex:0 0 auto; }
+  #dp-zones-retag-status{ font-size:11px; color:var(--text-dim); flex:1; }
 </style>
 </head>
 <body>
@@ -296,6 +326,7 @@
       <div id="dp-global-list-filter">
         <input id="dp-global-search" type="text" placeholder="Sök namn, område eller kommentar…">
         <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
+        <button class="dp-btn" id="dp-global-zones-btn" title="Hantera zoner — automatisk områdestaggning av foton utifrån deras GPS-koordinat (SWEREF99 20 15)">📍 Zoner…</button>
       </div>
       <div id="dp-global-table-head" class="dp-global-grid">
         <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="name"></span></div>
@@ -456,6 +487,40 @@
     <button class="dp-btn" id="dp-fp-close">Stäng ✕</button>
   </div>
   <div id="dp-filepicker-list"></div>
+</div>
+
+<!-- Zoner: hantera namngivna polygoner (SWEREF99 N/E-hörn) som automatiskt
+     taggar "Område" på foton vars GPS-koordinat hamnar innanför. Se
+     ZONER-avsnittet och ZonesPanel-klassen i JS-delen. -->
+<div id="dp-zones-panel">
+  <div id="dp-zones-header">
+    <span>📍 Zoner — automatisk områdestaggning av foton</span>
+    <button class="dp-btn" id="dp-zones-close">Stäng ✕</button>
+  </div>
+  <div id="dp-zones-body">
+    <div style="font-size:11px; color:var(--text-dim);">
+      Foton med GPS-koordinat (SWEREF99 20 15) taggas automatiskt med "Område" om de hamnar innanför en zon nedan.
+      Om zoner överlappar vinner den FÖRSTA zonen i listan som träffar — ordna dem i listan efter behov. Du kan alltid
+      skriva över taggningen för hand i den projektomfattande listan efteråt — då rör zonerna inte den filen igen
+      förrän du själv tömmer fältet där.
+    </div>
+    <div id="dp-zones-list"></div>
+    <div id="dp-zones-empty" style="display:none;">Inga zoner definierade än — lägg till en nedan.</div>
+    <div id="dp-zone-form">
+      <h5 id="dp-zone-form-title">Ny zon</h5>
+      <input type="text" id="dp-zone-name-input" placeholder="Namn (t.ex. Sikthall, Sektionsfickor)">
+      <div id="dp-zone-points"></div>
+      <div id="dp-zone-form-actions">
+        <button class="dp-btn" id="dp-zone-add-point">+ Lägg till hörn</button>
+        <button class="dp-btn dp-btn-primary" id="dp-zone-save">💾 Spara zon</button>
+        <button class="dp-btn" id="dp-zone-cancel-edit" style="display:none;">Avbryt ändring</button>
+      </div>
+    </div>
+  </div>
+  <div id="dp-zones-footer">
+    <span id="dp-zones-retag-status"></span>
+    <button class="dp-btn" id="dp-zones-retag">↻ Tagga om alla foton med koordinater</button>
+  </div>
 </div>
 
 <script>
@@ -2151,10 +2216,14 @@ async function recordInIndex(sel, item){
       name: item.name, kind: item.kind, versionId: item.versionId || null,
       modelId: sel.modelId, guid: sel.guid, runtimeId: sel.runtimeId,
       objectName: sel.name || "", updatedAt: new Date().toISOString(),
-      // Bevara ev. redan ifyllt område/kommentar/EXIF-datum — det här
-      // anropet uppdaterar bara TC-relaterade fält (namn/objekt/id:n),
-      // aldrig användarens egna manuella data eller redan uppmätt EXIF.
-      area: prev?.area || "", comment: prev?.comment || "",
+      // Bevara ev. redan ifyllt område/kommentar/EXIF-datum/koordinat —
+      // det här anropet uppdaterar bara TC-relaterade fält (namn/objekt/
+      // id:n), aldrig användarens egna manuella data eller redan uppmätt
+      // EXIF/GPS. areaAuto bevaras också, så en fil som redan är auto-
+      // taggad (se autoTagZoneForFile) fortsätter kunna taggas om av
+      // zonerna, medan en manuellt ifylld fil (areaAuto=false) lämnas ifred.
+      area: prev?.area || "", areaAuto: prev?.areaAuto || false, comment: prev?.comment || "",
+      sweref: prev?.sweref || null,
       capturedDate: prev?.capturedDate || null,
     };
     scheduleSaveProjectIndex();
@@ -2163,14 +2232,20 @@ async function recordInIndex(sel, item){
   }
 }
 
-// Manuellt "område"-fält (t.ex. "Sikthall", "Sektionsfickor") satt av
-// användaren direkt i den projektomfattande listan — används för att
-// filtrera/sortera listan. Rent klientdata, ingen TC-motsvarighet.
-async function setIndexArea(fileId, area){
+// "Område"-fält (t.ex. "Sikthall", "Sektionsfickor") — antingen skrivet för
+// hand av användaren direkt i den projektomfattande listan, eller satt
+// automatiskt utifrån ett fotos SWEREF-koordinat och en definierad zon
+// (se ZONER-avsnittet/autoTagZoneForFile). "auto" skiljer de båda åt: en
+// automatisk taggning får skrivas över av en NY automatisk taggning (t.ex.
+// om zonerna ändras), men en manuell taggning (auto=false, satt av
+// GlobalIndexPanels egen inmatning) rörs aldrig av zonlogiken igen förrän
+// användaren själv tömmer fältet.
+async function setIndexArea(fileId, area, { auto=false } = {}){
   try{
     const idx = await loadProjectIndex();
     if(!idx.files[fileId]) return;
     idx.files[fileId].area = area;
+    idx.files[fileId].areaAuto = auto;
     idx.files[fileId].updatedAt = new Date().toISOString();
     scheduleSaveProjectIndex();
   }catch(err){
@@ -2207,6 +2282,155 @@ async function setIndexCapturedDate(fileId, dateIso){
   }catch(err){
     console.warn("[index] kunde inte spegla EXIF-datum i indexet:", err);
   }
+}
+
+// Speglar fotots GPS-koordinat, omräknad till SWEREF99 20 15 (samma formel
+// som visas för användaren i fotorutan, se wgs84ToSweref99_20_15), i
+// projektindexet — i samma anda som setIndexCapturedDate. Detta är vad
+// ZONER-avsnittet nedan använder för att kunna auto-tagga REDAN uppladdade
+// foton utan att behöva öppna varje fil på nytt (EXIF-parsningen görs bara
+// en gång per fil ändå, se renderRealImage, men själva SWEREF-talet sparas
+// nu HÄR också istället för att bara räknas fram i farten för visning).
+async function setIndexSweref(fileId, sweref){
+  try{
+    const idx = await loadProjectIndex();
+    const rec = idx.files[fileId];
+    if(!rec) return;
+    const prev = rec.sweref;
+    if(prev && sweref && prev.N===sweref.N && prev.E===sweref.E) return;
+    if(!prev && !sweref) return;
+    rec.sweref = sweref;
+    scheduleSaveProjectIndex();
+  }catch(err){
+    console.warn("[index] kunde inte spegla SWEREF-koordinat i indexet:", err);
+  }
+}
+
+/* =====================================================================
+   ZONER — automatisk områdestaggning av foton via SWEREF99-koordinater.
+
+   Bakgrund: "Område"-fältet i den projektomfattande listan (se setIndexArea
+   ovan) fylldes tidigare bara i för hand. Nu när alla foton får en riktig
+   SWEREF99 20 15-koordinat (N/E, meter) via EXIF-GPS kan vi istället
+   definiera enkla POLYGONER ("zoner", t.ex. "Sikthall", "Sektionsfickor")
+   och automatiskt sätta Område till namnet på den zon fotots koordinat
+   hamnar innanför.
+
+   En zon är { id, name, points:[{N,E}, ...] } — valfritt antal hörn
+   (minst 3), i samma koordinatsystem som redan visas för foton. Sparas
+   som en egen companion-fil i samma dolda datamapp som projektindexet
+   (samma mönster som PROJECT_INDEX_NAME/tcSaveMarkupBlob).
+
+   VIKTIGT: en automatisk taggning (areaAuto=true, se setIndexArea) rör
+   ALDRIG ett fält användaren själv skrivit i den projektomfattande listan
+   (areaAuto=false där) — se GlobalIndexPanels område-inmatning.
+   ===================================================================== */
+const ZONES_FILE_NAME = "omraden-zoner.json";
+let _zonesCache = null;
+let _zonesSaveTimer = null;
+
+async function loadZones(){
+  if(_zonesCache) return _zonesCache;
+  if(!tcAccessToken){ _zonesCache = { zones: [] }; return _zonesCache; }
+  try{
+    const folderId = await ensureDataFolder();
+    const items = await tcListFolderItems(folderId);
+    const existing = items.find(it => it.type!=="FOLDER" && it.name===ZONES_FILE_NAME);
+    if(existing){
+      const blob = await downloadAttachmentBlob(existing.id, existing.versionId);
+      if(blob) _zonesCache = JSON.parse(await blob.text());
+    }
+  }catch(err){
+    console.warn("[zoner] kunde inte läsa zonfilen:", err);
+  }
+  if(!_zonesCache || typeof _zonesCache!=="object") _zonesCache = { zones: [] };
+  if(!Array.isArray(_zonesCache.zones)) _zonesCache.zones = [];
+  return _zonesCache;
+}
+
+function scheduleSaveZones(){
+  clearTimeout(_zonesSaveTimer);
+  _zonesSaveTimer = setTimeout(saveZonesNow, 800);
+}
+async function saveZonesNow(){
+  if(!tcAccessToken || !_zonesCache) return;
+  try{
+    const folderId = await ensureDataFolder();
+    const items = await tcListFolderItems(folderId);
+    const existing = items.find(it => it.type!=="FOLDER" && it.name===ZONES_FILE_NAME);
+    const blob = new Blob([JSON.stringify(_zonesCache)], { type: "application/json" });
+    await uploadFileToFolder(folderId, ZONES_FILE_NAME, blob);
+    if(existing) await deleteFile(existing.id);
+  }catch(err){
+    console.warn("[zoner] kunde inte spara zonfilen:", err);
+  }
+}
+
+/* Ray casting (jämn-udda-regeln) — standardalgoritm för punkt-i-polygon.
+   points: [{N,E}, ...], minst 3 hörn, ordningen (medurs/moturs) spelar
+   ingen roll för algoritmen. */
+function pointInPolygon(N, E, points){
+  if(!points || points.length<3) return false;
+  let inside = false;
+  for(let i=0, j=points.length-1; i<points.length; j=i++){
+    const pi = points[i], pj = points[j];
+    const intersects = ((pi.E>E) !== (pj.E>E))
+      && (N < (pj.N-pi.N) * (E-pi.E) / (pj.E-pi.E) + pi.N);
+    if(intersects) inside = !inside;
+  }
+  return inside;
+}
+
+/* Första zonen i listan (i sparad ordning) vars polygon innehåller
+   punkten — se ZONER-kommentaren om att ordningen spelar roll om zoner
+   överlappar. Returnerar zonens namn, eller null om ingen träff. */
+function matchZoneForPoint(N, E, zones){
+  for(const zone of (zones||[])){
+    if(zone.points && zone.points.length>=3 && pointInPolygon(N, E, zone.points)) return zone.name;
+  }
+  return null;
+}
+
+/* Körs varje gång ett fotos SWEREF-koordinat blir känd (nytt foto ELLER
+   en omtaggningsomgång) — sätter "Område" till den matchande zonens namn,
+   men rör ALDRIG ett fält användaren fyllt i för hand (se setIndexArea).
+   Om fältet tidigare var auto-satt men ingen zon längre träffar (t.ex. en
+   zon togs bort/ändrades) rensas det istället för att lämnas missvisande.
+   Returnerar den matchade zonens namn, eller null. */
+async function autoTagZoneForFile(fileId, sweref){
+  if(!sweref) return null;
+  try{
+    const idx = await loadProjectIndex();
+    const rec = idx.files[fileId];
+    if(!rec) return null;
+    if(rec.area && !rec.areaAuto) return null; // manuellt ifyllt — rör inte
+    const zonesData = await loadZones();
+    const matched = matchZoneForPoint(sweref.N, sweref.E, zonesData.zones);
+    if(matched && matched !== rec.area) await setIndexArea(fileId, matched, { auto:true });
+    else if(!matched && rec.areaAuto && rec.area) await setIndexArea(fileId, "", { auto:true });
+    return matched;
+  }catch(err){
+    console.warn("[zoner] kunde inte auto-tagga fil:", fileId, err);
+    return null;
+  }
+}
+
+/* Går igenom HELA projektindexet och kör om zonmatchningen för varje fil
+   som redan har en sparad SWEREF-koordinat — används av "Tagga om alla
+   foton"-knappen i zonpanelen (t.ex. efter att en zon lagts till/ändrats),
+   så att redan uppladdade foton inte förlitar sig på att öppnas igen. */
+async function retagAllPhotosWithZones(onProgress){
+  const idx = await loadProjectIndex();
+  const entries = Object.entries(idx.files||{}).filter(([,r]) => r.sweref);
+  let changed = 0;
+  for(let i=0;i<entries.length;i++){
+    const [fileId, rec] = entries[i];
+    const before = rec.area;
+    await autoTagZoneForFile(fileId, rec.sweref);
+    if(rec.area !== before) changed++;
+    if(onProgress) onProgress(i+1, entries.length);
+  }
+  return { checked: entries.length, changed };
 }
 
 /* =====================================================================
@@ -2575,6 +2799,14 @@ async function renderRealImage(canvas, imgItem){
       // kolumnen i den projektövergripande listan kan visa det utan att
       // själv behöva ladda ner/läsa EXIF ur filen.
       if(entry.exif?.dateIso) setIndexCapturedDate(imgItem.id, entry.exif.dateIso);
+      // Samma sak för GPS-koordinaten, omräknad till SWEREF99 20 15 — och
+      // direkt vidare till zonmatchningen (se ZONER-avsnittet) så att
+      // "Område" fylls i automatiskt första gången fotot öppnas, om det
+      // hamnar innanför en definierad zon och inte redan är manuellt ifyllt.
+      if(entry.exif?.lat!=null && entry.exif?.lon!=null){
+        const sweref = wgs84ToSweref99_20_15(entry.exif.lat, entry.exif.lon);
+        setIndexSweref(imgItem.id, sweref).then(()=> autoTagZoneForFile(imgItem.id, sweref));
+      }
     }
     const bitmap = entry.bitmap;
     const ctx = canvas.getContext("2d");
@@ -3141,6 +3373,209 @@ class AnnotationEngine{
 }
 
 /* =====================================================================
+   DEL 5a2 — ZonesPanel
+
+   Enkel popup-panel (samma mönster som ExistingFilePicker) för att hantera
+   ZONER (se ZONER-avsnittet i DEL 1d: loadZones/saveZonesNow/pointInPolygon/
+   matchZoneForPoint/autoTagZoneForFile/retagAllPhotosWithZones). Listar
+   befintliga zoner, låter användaren lägga till/redigera/ta bort en zon
+   (namn + valfritt antal SWEREF99 N/E-hörn), och har en knapp för att köra
+   om zonmatchningen mot alla redan uppladdade foton som har en sparad
+   koordinat (viktigt eftersom foton annars bara auto-taggas när de öppnas
+   första gången, se renderRealImage).
+   ===================================================================== */
+class ZonesPanel{
+  constructor(){
+    this.el = {
+      root: document.getElementById("dp-zones-panel"),
+      list: document.getElementById("dp-zones-list"),
+      empty: document.getElementById("dp-zones-empty"),
+      close: document.getElementById("dp-zones-close"),
+      formTitle: document.getElementById("dp-zone-form-title"),
+      nameInput: document.getElementById("dp-zone-name-input"),
+      points: document.getElementById("dp-zone-points"),
+      addPoint: document.getElementById("dp-zone-add-point"),
+      save: document.getElementById("dp-zone-save"),
+      cancelEdit: document.getElementById("dp-zone-cancel-edit"),
+      retag: document.getElementById("dp-zones-retag"),
+      retagStatus: document.getElementById("dp-zones-retag-status"),
+    };
+    this._zonesData = null; // { zones:[...] } — senast inlästa (cachead referens, se loadZones)
+    this._editingId = null; // id på zonen som redigeras, eller null = ny zon
+
+    this.el.close.addEventListener("click", ()=> this.hide());
+    this.el.addPoint.addEventListener("click", ()=> this._addPointRow());
+    this.el.save.addEventListener("click", ()=> this._saveZone());
+    this.el.cancelEdit.addEventListener("click", ()=> this._resetForm());
+    this.el.retag.addEventListener("click", ()=> this._retagAll());
+  }
+
+  async show(){
+    this.el.root.classList.add("dp-visible");
+    if(!tcAccessToken){
+      this.el.list.innerHTML = "";
+      this.el.empty.style.display = "block";
+      this.el.empty.textContent = "Kräver en aktiv Trimble Connect-anslutning — inte tillgängligt i fristående testläge.";
+      return;
+    }
+    this.el.empty.textContent = "Inga zoner definierade än — lägg till en nedan.";
+    this._resetForm();
+    await this._refreshList();
+  }
+  hide(){ this.el.root.classList.remove("dp-visible"); }
+
+  async _refreshList(){
+    this._zonesData = await loadZones();
+    const zones = this._zonesData.zones;
+    this.el.empty.style.display = zones.length ? "none" : "block";
+    this.el.list.innerHTML = "";
+    zones.forEach((zone, i)=>{
+      const row = document.createElement("div");
+      row.className = "dp-zone-row";
+      const name = document.createElement("span");
+      name.className = "dp-zone-name";
+      name.textContent = zone.name;
+      const count = document.createElement("span");
+      count.className = "dp-zone-count";
+      count.textContent = `${zone.points.length} hörn`;
+      const editBtn = document.createElement("button");
+      editBtn.className = "dp-btn";
+      editBtn.textContent = "✎ Ändra";
+      editBtn.addEventListener("click", ()=> this._editZone(zone));
+      const upBtn = document.createElement("button");
+      upBtn.className = "dp-btn";
+      upBtn.textContent = "↑";
+      upBtn.title = "Flytta upp (avgör vem som vinner om zoner överlappar)";
+      upBtn.disabled = i===0;
+      upBtn.addEventListener("click", ()=> this._moveZone(i, -1));
+      const downBtn = document.createElement("button");
+      downBtn.className = "dp-btn";
+      downBtn.textContent = "↓";
+      downBtn.title = "Flytta ner";
+      downBtn.disabled = i===zones.length-1;
+      downBtn.addEventListener("click", ()=> this._moveZone(i, 1));
+      const delBtn = document.createElement("button");
+      delBtn.className = "dp-btn";
+      delBtn.textContent = "🗑";
+      delBtn.title = "Ta bort zon";
+      delBtn.addEventListener("click", ()=> this._deleteZone(zone));
+      row.append(name, count, upBtn, downBtn, editBtn, delBtn);
+      this.el.list.appendChild(row);
+    });
+  }
+
+  _addPointRow(N="", E=""){
+    const row = document.createElement("div");
+    row.className = "dp-zone-point-row";
+    const label = document.createElement("span");
+    label.className = "dp-zone-point-label";
+    label.textContent = `#${this.el.points.children.length+1}`;
+    const nInput = document.createElement("input");
+    nInput.type = "number"; nInput.step = "0.01"; nInput.placeholder = "N"; nInput.value = N;
+    nInput.title = "SWEREF99 20 15 — Northing (N), meter";
+    const eInput = document.createElement("input");
+    eInput.type = "number"; eInput.step = "0.01"; eInput.placeholder = "E"; eInput.value = E;
+    eInput.title = "SWEREF99 20 15 — Easting (E), meter";
+    const rmBtn = document.createElement("button");
+    rmBtn.className = "dp-btn dp-zone-point-remove";
+    rmBtn.textContent = "✕";
+    rmBtn.title = "Ta bort hörnet";
+    rmBtn.addEventListener("click", ()=>{ row.remove(); this._renumberPoints(); });
+    row.append(label, nInput, eInput, rmBtn);
+    this.el.points.appendChild(row);
+  }
+  _renumberPoints(){
+    [...this.el.points.children].forEach((row,i)=>{
+      row.querySelector(".dp-zone-point-label").textContent = `#${i+1}`;
+    });
+  }
+  _resetForm(){
+    this._editingId = null;
+    this.el.formTitle.textContent = "Ny zon";
+    this.el.nameInput.value = "";
+    this.el.points.innerHTML = "";
+    this.el.cancelEdit.style.display = "none";
+    // Tre tomma hörnrader som förval — en polygon behöver minst tre.
+    this._addPointRow(); this._addPointRow(); this._addPointRow();
+  }
+  _editZone(zone){
+    this._editingId = zone.id;
+    this.el.formTitle.textContent = `Ändra zon: ${zone.name}`;
+    this.el.nameInput.value = zone.name;
+    this.el.points.innerHTML = "";
+    zone.points.forEach(p => this._addPointRow(p.N, p.E));
+    this.el.cancelEdit.style.display = "";
+    this.el.nameInput.focus();
+  }
+
+  async _saveZone(){
+    const name = this.el.nameInput.value.trim();
+    if(!name){ alert("Ange ett namn på zonen (t.ex. Sikthall, Sektionsfickor)."); return; }
+    const points = [...this.el.points.children].map(row=>{
+      const [nInput, eInput] = row.querySelectorAll("input");
+      return { N: parseFloat(nInput.value), E: parseFloat(eInput.value) };
+    });
+    if(points.some(p => !isFinite(p.N) || !isFinite(p.E))){
+      alert("Alla hörn måste ha både N och E ifyllda med siffror.");
+      return;
+    }
+    if(points.length < 3){
+      alert("En zon behöver minst tre hörn för att bilda en yta.");
+      return;
+    }
+    const zonesData = await loadZones();
+    if(this._editingId){
+      const zone = zonesData.zones.find(z=>z.id===this._editingId);
+      if(zone){ zone.name = name; zone.points = points; }
+    }else{
+      zonesData.zones.push({ id: "zon-"+Date.now()+"-"+Math.random().toString(36).slice(2,7), name, points });
+    }
+    scheduleSaveZones();
+    this._resetForm();
+    await this._refreshList();
+    this.el.retagStatus.textContent = 'Zonen är sparad. Klicka "Tagga om alla foton" nedan för att applicera den på redan uppladdade foton också.';
+  }
+
+  async _deleteZone(zone){
+    if(!confirm(`Ta bort zonen "${zone.name}"?\n\nFoton som redan auto-taggats med det namnet ändras inte automatiskt förrän du kör "Tagga om alla foton" igen.`)) return;
+    const zonesData = await loadZones();
+    zonesData.zones = zonesData.zones.filter(z=>z.id!==zone.id);
+    scheduleSaveZones();
+    await this._refreshList();
+  }
+
+  async _moveZone(index, dir){
+    const zonesData = await loadZones();
+    const newIndex = index+dir;
+    if(newIndex<0 || newIndex>=zonesData.zones.length) return;
+    const [z] = zonesData.zones.splice(index,1);
+    zonesData.zones.splice(newIndex,0,z);
+    scheduleSaveZones();
+    await this._refreshList();
+  }
+
+  async _retagAll(){
+    this.el.retag.disabled = true;
+    const prevText = this.el.retag.textContent;
+    this.el.retag.textContent = "Taggar om…";
+    this.el.retagStatus.textContent = "";
+    try{
+      const { checked, changed } = await retagAllPhotosWithZones((done,total)=>{
+        this.el.retag.textContent = `Taggar om… (${done}/${total})`;
+      });
+      this.el.retagStatus.textContent = `Klart — ${checked} foton med koordinat kontrollerade, ${changed} fick ett nytt/ändrat område.`;
+      if(globalIndexPanel) globalIndexPanel.refresh();
+    }catch(err){
+      console.error("[zoner] omtaggning misslyckades:", err);
+      this.el.retagStatus.textContent = `Kunde inte tagga om: ${describeError(err)}`;
+    }finally{
+      this.el.retag.disabled = false;
+      this.el.retag.textContent = prevText;
+    }
+  }
+}
+
+/* =====================================================================
    DEL 5b — GlobalIndexPanel
 
    Visas i panel-body istället för DrawingPreviewWidget när inget objekt är
@@ -3161,12 +3596,14 @@ class GlobalIndexPanel{
       areaFilter: document.getElementById("dp-global-area-filter"),
       search: document.getElementById("dp-global-search"),
       head: document.getElementById("dp-global-table-head"),
+      zonesBtn: document.getElementById("dp-global-zones-btn"),
     };
     this._idx = null; // senast inlästa projektindex (cachead referens, se loadProjectIndex)
     this._sortField = "name";
     this._sortDir = "asc";
     this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
     this.el.search.addEventListener("input", ()=> this._renderRows());
+    this.el.zonesBtn.addEventListener("click", ()=> zonesPanel?.show());
     this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
       th.addEventListener("click", (e)=>{
         // Klick på draghandtaget (kolumnbredd) ska INTE räknas som klick på
@@ -3340,13 +3777,20 @@ class GlobalIndexPanel{
       area.className = "dp-attach-area";
       area.type = "text";
       area.placeholder = "Område…";
-      area.title = "Område/plats (fritt fält du fyller i själv, t.ex. Sikthall, Sektionsfickor)";
+      area.title = rec.areaAuto
+        ? "Område/plats — auto-taggat av en zon utifrån fotots GPS-koordinat. Skriv egen text för att låsa fältet (rörs då aldrig av zonerna igen)."
+        : "Område/plats (fritt fält du fyller i själv, t.ex. Sikthall, Sektionsfickor — eller auto-taggat via Zoner, se knappen ovan)";
       area.value = rec.area || "";
       area.addEventListener("keydown", e=>{ if(e.key==="Enter") area.blur(); });
       area.addEventListener("blur", ()=>{
         const v = area.value.trim();
+        // En manuell redigering (även att tömma fältet) LÅSER fältet mot
+        // framtida auto-taggning — se areaAuto/autoTagZoneForFile. Skriver
+        // man tillbaka EXAKT samma text som en zon redan satt låses den
+        // ändå, vilket är avsiktligt: användaren rörde fältet med vilje.
         rec.area = v;
-        setIndexArea(fileId, v);
+        rec.areaAuto = false;
+        setIndexArea(fileId, v, { auto:false });
         const areas = [...new Set(Object.values(this._idx.files||{}).map(r=>r.area).filter(Boolean))]
           .sort((a,b)=>a.localeCompare(b,"sv"));
         this._rebuildAreaOptions(areas);
@@ -4364,10 +4808,13 @@ class DrawingPreviewWidget{
 // innan bootApp() faktiskt körs (dvs. efter att lösenordsspärren öppnats).
 let globalIndexPanel = null;
 let widget = null;
+let zonesPanel = null;
 
 function bootApp(){
   globalIndexPanel = new GlobalIndexPanel();
   globalIndexPanel.show(); // startläge: inget objekt markerat ännu
+
+  zonesPanel = new ZonesPanel();
 
   widget = new DrawingPreviewWidget();
 
