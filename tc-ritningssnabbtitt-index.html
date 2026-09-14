@@ -328,8 +328,9 @@
         <input id="dp-global-search" type="text" placeholder="Sök namn, område eller kommentar…">
         <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
         <button class="dp-btn" id="dp-global-zones-btn" title="Hantera zoner — automatisk områdestaggning av foton utifrån deras GPS-koordinat (SWEREF99 20 15)">📍 Zoner…</button>
-        <button class="dp-btn" id="dp-global-upload-standalone-btn" title="Ladda upp ett eller flera foton utan att koppla dem till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📷 Foto utan koppling…</button>
+        <button class="dp-btn" id="dp-global-upload-standalone-btn" title="Ladda upp ett eller flera foton från din dator utan att koppla dem till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📷 Foto utan koppling…</button>
         <input type="file" id="dp-standalone-file-input" accept="image/*" multiple style="display:none;">
+        <button class="dp-btn" id="dp-global-browse-standalone-btn" title="Välj ett foto som redan finns i Trimble Connect, utan att koppla det till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📁 Från Trimble Connect…</button>
       </div>
       <div id="dp-global-table-head" class="dp-global-grid">
         <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="name"></span></div>
@@ -989,33 +990,65 @@ async function uploadFileToFolder(folderId, filename, blob){
   const initData = await initRes.json();
   const uploadId = initData.uploadId;
   const contents = Array.isArray(initData.contents) ? initData.contents : [];
-  const putUrl = contents[0]?.url;
-  if(!uploadId || !putUrl) throw new Error("Ofullständigt svar från uppladdnings-initiering.");
-  // Diagnostik (2026-09-11): om Trimble delar upp STORA filer i flera delar
-  // (contents.length > 1, t.ex. multipart-uppladdning) skulle vi idag bara
-  // ladda upp den FÖRSTA delen och tysta strunta i resten — vilket exakt
-  // skulle kunna förklara en 500 vid commit (servern ser en ofullständig
-  // uppladdning). Vi hanterar det inte automatiskt än (vet inte det exakta
-  // formatet för flerdelade uppladdningar), men loggar tydligt så vi vet
-  // OM det är det som händer nästa gång ett fel uppstår.
+  if(!uploadId || !contents.length || !contents[0]?.url) throw new Error("Ofullständigt svar från uppladdnings-initiering.");
+  const isMultipart = contents.length > 1;
   console.log("[TC upload] init-svar:", { uploadId, antalDelar: contents.length, blobBytes: blob.size, filename });
-  if(contents.length > 1) console.warn("[TC upload] VARNING: uppladdnings-initieringen bad om", contents.length, "delar men vi laddar bara upp DEN FÖRSTA — troligen orsaken om nästa steg (commit) misslyckas för större filer.");
 
+  // BUGFIX (2026-09-14, verifierat mot en riktig 500 "File service commit
+  // error" för en fil stor nog att delas upp): tidigare laddades BARA
+  // contents[0] upp, oavsett hur många delar init-svaret bad om, och commit
+  // skickade bara { uploadId } — utan de enskilda delarnas ETag, vilket
+  // servern (rimligen) behöver för att kunna pussla ihop en flerdelad fil.
+  // Enligt Trimbles OpenAPI-spec (developer.trimble.com/docs/connect,
+  // reference/openapi/core) ska EN part laddas upp per contents[i].url
+  // (byteOffset/size om satta, annars hela filen i ett stycke om bara en
+  // del efterfrågades), och commit ska då skicka
+  // multipart.upload.parts:[{etag, part_number}] — ett per del, med ETag
+  // från respektive PUT-svar. Det är INTE bekräftat om Trimble även kräver
+  // en "Digest"-header (MD5) på commit-anropet för flerdelade filer — det
+  // dök upp i samma spec men såg ut att höra till en annan/nyare variant av
+  // upload-flödet, och en gissad/felkonstruerad sådan header riskerar att
+  // göra saken värre snarare än bättre. Om en flerdelad uppladdning
+  // fortfarande failar vid commit EFTER den här fixen är det första att
+  // testa.
   const bytes = await blob.arrayBuffer();
-  const putRes = await fetch(putUrl, { method: "PUT", body: bytes });
-  if(!putRes.ok){
-    const body = await tcErrBody(putRes);
-    throw new Error(`Filöverföring misslyckades (${putRes.status})${body ? " — "+body : ""}`);
+  const parts = [];
+  for(let i=0;i<contents.length;i++){
+    const part = contents[i];
+    const start = typeof part.byteOffset==="number" ? part.byteOffset : 0;
+    const size = typeof part.size==="number" ? part.size : bytes.byteLength;
+    const chunk = isMultipart ? bytes.slice(start, start+size) : bytes;
+    const putRes = await fetch(part.url, { method: "PUT", body: chunk });
+    if(!putRes.ok){
+      const body = await tcErrBody(putRes);
+      throw new Error(`Filöverföring misslyckades (del ${i+1}/${contents.length}, ${putRes.status})${body ? " — "+body : ""}`);
+    }
+    if(isMultipart){
+      const rawEtag = putRes.headers.get("ETag") || putRes.headers.get("etag");
+      if(!rawEtag){
+        // Vanlig fälla med presignade S3-liknande URL:er från webbläsare:
+        // ETag-svarshuvudet finns på riktigt men är inte exponerat för JS
+        // om inte servern satt "Access-Control-Expose-Headers: ETag" på
+        // PUT-svaret. Hellre ett tydligt fel HÄR än en gissad/tom etag som
+        // ger ett kryptiskt 500 vid commit.
+        throw new Error(`Del ${i+1}/${contents.length} laddades upp men gav inget läsbart ETag-svarshuvud (troligen inte exponerat via CORS) — kan inte slutföra en flerdelad uppladdning utan det. Se konsolen (F12) för detaljer.`);
+      }
+      parts.push({ etag: rawEtag.replace(/^"|"$/g,""), part_number: typeof part.partNumber==="number" ? part.partNumber : i+1 });
+    }
   }
+
+  const commitBody = { uploadId };
+  if(isMultipart) commitBody.multipart = { upload: { parts } };
+  console.log("[TC upload] commit-body:", commitBody);
 
   const commitRes = await fetch(tcApiUrl(`/files/fs/commit`), {
     method: "POST",
     headers: { Authorization: `Bearer ${tcAccessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ uploadId }),
+    body: JSON.stringify(commitBody),
   });
   if(!commitRes.ok){
     const body = await tcErrBody(commitRes);
-    throw new Error(`Kunde inte slutföra uppladdning (${commitRes.status})${body ? " — "+body : ""}`);
+    throw new Error(`Kunde inte slutföra uppladdning (${commitRes.status})${body ? " — "+body : ""}${isMultipart ? " (flerdelad uppladdning, "+contents.length+" delar — se konsolen för commit-body)" : ""}`);
   }
   let result = await commitRes.json();
 
@@ -1262,6 +1295,38 @@ async function tcLinkExistingFile(sel, file){
     kind: "drawing", id: file.id, versionId: file.versionId, name: file.name,
     revision: "–", discipline: "–", color: "#3d9bff",
   };
+}
+
+/* Samma "välj bland befintliga filer i Trimble Connect"-flöde som
+   tcLinkExistingFile ovan, men för ett foto som INTE ska kopplas till
+   något 3D-objekt (se tcUploadStandalonePhoto/"📷 Foto utan koppling…").
+   Filen laddas INTE upp igen — den finns redan i TC — utan hämtas EN gång
+   här för att läsa EXIF/GPS ur den (samma parseExifDateAndGps som
+   retagAllPhotosWithZones använder för redan uppladdade-men-aldrig-öppnade
+   foton), och registreras sedan direkt i projektindexet utan Object Link. */
+async function tcLinkExistingFileStandalone(file){
+  if(!tcAccessToken){
+    throw new Error("Kräver en aktiv Trimble Connect-anslutning — går inte att bläddra i testläge.");
+  }
+  if(!IMAGE_EXT.test(file.name || "")){
+    throw new Error(`"${file.name || "filen"}" verkar inte vara en bildfil.`);
+  }
+  let exif = null;
+  try{
+    const blob = await downloadAttachmentBlob(file.id, file.versionId);
+    if(blob) exif = parseExifDateAndGps(await blob.arrayBuffer());
+  }catch(err){
+    console.warn("[foto] kunde inte hämta/läsa EXIF ur befintlig fil:", file.name, err);
+  }
+
+  const sweref = (exif?.lat!=null && exif?.lon!=null) ? wgs84ToSweref99_20_15(exif.lat, exif.lon) : null;
+  const capturedDate = exif?.dateIso || (file.createdOn ? new Date(file.createdOn).toISOString() : null);
+  const rec = await recordStandaloneInIndex({ id: file.id, name: file.name, versionId: file.versionId }, sweref, capturedDate);
+  if(sweref){
+    try{ await autoTagZoneForFile(file.id, sweref); }
+    catch(err){ console.warn("[foto] kunde inte auto-tagga befintligt fristående foto mot zoner:", file.id, err); }
+  }
+  return { fileId: file.id, name: file.name, hasCoord: !!sweref, rec };
 }
 
 /* =====================================================================
@@ -2142,8 +2207,17 @@ async function createDxfForAttachment(item, dxfText){
 /* Enkel mappbläddrare som popup-panel. onPick(file) anropas när användaren
    klickar en FIL (inte mapp) i listan. */
 class ExistingFilePicker{
+  // Det finns bara ETT #dp-filepicker-element i DOM:en, så den här klassen
+  // är avsedd att instansieras EN gång (existingFilePicker, se DEL 7 —
+  // INIT) och sedan ÅTERANVÄNDAS av alla flöden som vill bläddra bland
+  // befintliga TC-filer — annars skulle två instanser binda dubbla
+  // klick-lyssnare till samma upp-/stäng-knappar. Vilken callback som körs
+  // när man klickar en fil avgörs PER open()-anrop (se open(onPick)
+  // nedan), inte av konstruktorn, så samma bläddrare kan användas både för
+  // "länka till markerat objekt" (DrawingPreviewWidget) och "lägg till som
+  // fristående foto" (GlobalIndexPanel) utan att blanda ihop dem.
   constructor(onPick){
-    this.onPick = onPick;
+    this.onPick = onPick || null;
     this.stack = []; // [{id, name}, ...] — sista elementet är aktuell mapp
     this.el = {
       root: document.getElementById("dp-filepicker"),
@@ -2155,7 +2229,8 @@ class ExistingFilePicker{
     this.el.up.addEventListener("click", e=>{ e.stopPropagation(); this._up(); });
     this.el.close.addEventListener("click", e=>{ e.stopPropagation(); this.hide(); });
   }
-  async open(){
+  async open(onPick){
+    if(onPick) this.onPick = onPick;
     if(!tcAccessToken){
       alert("Bläddring i Trimble Connect kräver en aktiv anslutning — fungerar inte i fristående testläge.");
       return;
@@ -3932,6 +4007,7 @@ class GlobalIndexPanel{
       zonesBtn: document.getElementById("dp-global-zones-btn"),
       uploadStandaloneBtn: document.getElementById("dp-global-upload-standalone-btn"),
       standaloneFileInput: document.getElementById("dp-standalone-file-input"),
+      browseStandaloneBtn: document.getElementById("dp-global-browse-standalone-btn"),
     };
     this._idx = null; // senast inlästa projektindex (cachead referens, se loadProjectIndex)
     this._sortField = "name";
@@ -3941,6 +4017,11 @@ class GlobalIndexPanel{
     this.el.zonesBtn.addEventListener("click", ()=> zonesPanel?.show());
     this.el.uploadStandaloneBtn.addEventListener("click", ()=> this.el.standaloneFileInput.click());
     this.el.standaloneFileInput.addEventListener("change", ()=> this._uploadStandalonePhotos());
+    // Samma delade filbläddrare (existingFilePicker) som widgetens "🔗 Länka
+    // befintlig fil"-knapp använder (se ExistingFilePicker-kommentaren och
+    // DEL 7/bootApp) — bara med en annan callback här, som INTE skapar
+    // någon Object Link.
+    this.el.browseStandaloneBtn.addEventListener("click", ()=> existingFilePicker.open(file => this._addExistingStandalonePhoto(file)));
     this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
       th.addEventListener("click", (e)=>{
         // Klick på draghandtaget (kolumnbredd) ska INTE räknas som klick på
@@ -4057,6 +4138,24 @@ class GlobalIndexPanel{
     if(failed) parts.push(`${failed} st misslyckades (se konsolen, F12).`);
     alert(parts.join(" "));
     await this.refresh();
+  }
+
+  // "📁 Från Trimble Connect…"-knappen: samma resultat som "📷 Foto utan
+  // koppling…" ovan (en fristående, ej objekt-kopplad radpost med
+  // GPS-koordinat), men för ett foto som REDAN finns i projektet — väljs
+  // via den delade filbläddraren (existingFilePicker) istället för att
+  // laddas upp från datorn. Se tcLinkExistingFileStandalone.
+  async _addExistingStandalonePhoto(file){
+    try{
+      const { hasCoord, name } = await tcLinkExistingFileStandalone(file);
+      await this.refresh();
+      if(!hasCoord){
+        alert(`"${name}" lades till, men hade ingen GPS-data i bilden — går därför inte att zooma till i 3D-vyn.`);
+      }
+    }catch(err){
+      console.error("[foto] kunde inte lägga till befintligt fristående foto:", file?.name, err);
+      alert("Kunde inte lägga till fotot: " + describeError(err));
+    }
   }
 
   // Bygger om (a) områdes-filtrets alternativ, (b) sorteringspilarna i
@@ -4335,7 +4434,10 @@ class DrawingPreviewWidget{
     this._bindPan();
     this._observeResize();
 
-    this.filePicker = new ExistingFilePicker(file => this._linkExistingFile(file));
+    // Filbläddraren (existingFilePicker) är en delad, global instans — se
+    // ExistingFilePicker-kommentaren och DEL 7/bootApp — eftersom det bara
+    // finns ETT #dp-filepicker-element i DOM:en. Öppnas via
+    // existingFilePicker.open(callback) nedan, inte en egen instans här.
 
     // Tidigare fanns två separata AnnotationEngine-instanser (en för den lilla
     // popup-thumbnailen, en för fullskärmsläget). Nu finns bara EN vy, så en
@@ -5252,7 +5354,7 @@ class DrawingPreviewWidget{
     this.el.prev.addEventListener("click", e=>{e.stopPropagation(); this._goPrev();});
     this.el.next.addEventListener("click", e=>{e.stopPropagation(); this._goNext();});
     this.el.addImage.addEventListener("click", e=>{e.stopPropagation(); this._addAttachment();});
-    this.el.linkExisting.addEventListener("click", e=>{e.stopPropagation(); this.filePicker.open();});
+    this.el.linkExisting.addEventListener("click", e=>{e.stopPropagation(); existingFilePicker.open(file => this._linkExistingFile(file));});
     this.el.add3d.addEventListener("click", e=>{e.stopPropagation(); this._toggle3dPanel();});
     this._bind3dPanel();
     this.el.fileInput.addEventListener("change", e=>{
@@ -5289,8 +5391,11 @@ class DrawingPreviewWidget{
 let globalIndexPanel = null;
 let widget = null;
 let zonesPanel = null;
+let existingFilePicker = null; // DELAS mellan widgeten ("länka till markerat objekt") och GlobalIndexPanel ("lägg till som fristående foto") — se ExistingFilePicker-kommentaren.
 
 function bootApp(){
+  existingFilePicker = new ExistingFilePicker();
+
   globalIndexPanel = new GlobalIndexPanel();
   globalIndexPanel.show(); // startläge: inget objekt markerat ännu
 
