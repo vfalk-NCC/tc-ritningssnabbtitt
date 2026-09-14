@@ -41,6 +41,7 @@
     border-bottom:1px solid var(--border); display:flex; align-items:center; padding:0 12px;
     font-size:12px; color:var(--text-dim); gap:8px; z-index:5; }
   #ext-toolbar b{color:var(--text); font-weight:600;}
+  #ext-version{ font-size:10px; color:var(--text-dim); opacity:.7; }
   #ext-status{ margin-left:auto; display:flex; align-items:center; gap:6px; }
   #ext-status .dot{ width:7px; height:7px; border-radius:50%; background:var(--text-dim); }
   #ext-status.connected .dot{ background:var(--ok); }
@@ -361,7 +362,7 @@
 
 <div id="app">
   <div id="ext-toolbar">
-    Quick viewer by VFA — <b id="ext-project-name">–</b>
+    Quick viewer by VFA <span id="ext-version" title="Version/leveranstidpunkt för den här filen — bumpas vid varje uppdatering, se APP_VERSION överst i JS-koden">–</span> — <b id="ext-project-name">–</b>
     <div id="ext-status"><span class="dot"></span><span id="ext-status-text">Ansluter…</span></div>
   </div>
 
@@ -615,6 +616,17 @@
 </div>
 
 <script>
+/* =====================================================================
+   VERSIONSMARKERING — bumpas för hand vid varje ny leverans (se
+   #ext-version i verktygsfältet, som alltid visar den HÄR strängen,
+   oavsett TC-anslutning). Syftet är att du snabbt ska kunna se, direkt i
+   Trimble Connect, om den fil som faktiskt körs är den senaste — utan att
+   behöva gräva i konsolen eller jämföra filinnehåll för hand. Format:
+   "YYYY-MM-DD HH:MM" (UTC), satt av Claude vid varje leverad uppdatering.
+   ===================================================================== */
+const APP_VERSION = "2026-09-14 14:05 UTC";
+document.getElementById("ext-version").textContent = `(${APP_VERSION})`;
+
 /* =====================================================================
    DEL 1 — TRIMBLE CONNECT-INTEGRATION
 
