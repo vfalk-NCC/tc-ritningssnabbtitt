@@ -444,8 +444,9 @@
           </label>
         </div>
         <div id="dp-3d-note">
-          Guiden ritas som fyra hörnpunkter i 3D-vyn (inte den riktiga ritningsbilden — Trimbles API kan inte rendera
-          bilder live) så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är
+          Guiden ritas som fyra riktiga linjer (Trimble Connects egen markup-typ, "LineMarkup") som bildar plattans
+          bounding box direkt i 3D-vyn (inte den riktiga ritningsbilden — Trimbles API kan inte rendera bilder live)
+          så du kan se ungefärligt läge/rotation/lutning INNAN du laddar upp. <b>Ankaret</b> är
           bounding-boxen för objektet du har markerat i 3D — flytta/rotera det markerade objektet om ankaret hamnar fel.
           Storleken (bredd/höjd) kommer från kalibreringen (verktyget "Kalibrera"). Efter uppladdning kan du finjustera
           ytterligare med Trimble Connects egna "Positionsinställningar" i Modeller-panelen.<br><br>
@@ -1301,18 +1302,11 @@ function describeError(err){
    byggritningar. Okänd enhet => null (anroparen får fråga användaren). */
 const IFC_UNIT_TO_METERS = { mm:0.001, cm:0.01, dm:0.1, m:1, km:1000 };
 
-/* Ikon för guide-punkterna i 3D-vyn (viewer.addIcon). BUGFIX (verifierat mot
-   riktig Trimble Connect-miljö 2026-09-11): en SVG-data-URI gav
-   "InvalidStateError: The source image could not be decoded" — Trimbles
-   ikon-laddare (PointIconModel) verkar inte kunna avkoda data:image/svg+xml.
-   En vanlig PNG (samma röda prick, förgenererad och base64-inbäddad här)
-   fungerar med samma bild-avkodning som alla andra rasterbilder. */
-const GUIDE_ICON_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAA0ElEQVR4nO2XSxLDIAxDQ2/UfY7ffY9EVs3wsWyBYWCm0TqWXowD5Dj+XaGnKMYYoWEITZ70w1qoB+Y1K5ytUwmhwfnGRZ+vHAS6AQHEcC2YAJEgRIAqvCXYACkh7BnwhBP1FUD29t5wwafsbgbQO+2tSnPwEox6e8OP2gdm6gaYsvalhFnYpwMPwAOwHCA7JMCR6lbi+8vbpwOVRncB+GUArRfKXqU5VQemzIKw9hBAK/aGS9rzTqhCWCCjbsUUCCFrsKl9oPfrYOqW/xsu1wUbR14yhcHdowAAAABJRU5ErkJggg==";
-
 /* ---------------------------------------------------------------------
-   Vektormatte — DELAS mellan den levande 3D-guiden (addIcon, ritas direkt
-   i Trimble Connects 3D-vy) och själva IFC-genereringen, så att guidens
-   fyra hörnpunkter GARANTERAT hamnar på exakt samma plats som plattan
+   Vektormatte — DELAS mellan den levande 3D-guiden (markup.addLineMarkups,
+   ritas direkt i Trimble Connects 3D-vy som fyra riktiga linjer) och själva
+   IFC-genereringen, så att guidens fyra hörnpunkter GARANTERAT hamnar på
+   exakt samma plats som plattan
    som sen laddas upp. Se computePlanePlacement().
    --------------------------------------------------------------------- */
 function vAdd(a,b){ return {x:a.x+b.x, y:a.y+b.y, z:a.z+b.z}; }
@@ -4203,22 +4197,27 @@ class DrawingPreviewWidget{
      dvs. plattans utgångsläge blir centrum/nedre/övre kant av det objekt
      du redan har markerat, istället för alltid världens origo (v1:s
      beteende). Offset/rotation/lutning/skala i panelen justerar sedan
-     därifrån, och en LIVE guide (fyra hörnpunkter, ritade direkt i 3D-vyn
-     via viewer.addIcon) visar var plattan hamnar INNAN du laddar upp.
+     därifrån, och en LIVE guide (fyra riktiga linjer som bildar plattans
+     bounding box, ritade direkt i 3D-vyn via markup.addLineMarkups) visar
+     var plattan hamnar INNAN du laddar upp.
 
-     Det som är BEKRÄFTAT mot Trimbles officiella API-dokumentation:
-     viewer.getObjectBoundingBoxes och viewer.addIcon/removeIcon finns
-     som metoder. Det som INTE gick att bekräfta (och alltså är en
-     kvalificerad gissning tills ni testat i er egen miljö): exakt form på
-     svaret från getObjectBoundingBoxes (antar {boundingBox:{min,max}} med
-     {x,y,z}-fält) och på PointIcon (antar {id, iconPath, position:{x,y,z},
-     size} — iconPath måste peka på en bildfil; vi genererar en liten
-     data:-URI med en cirkel, vilket kanske inte stöds beroende på hur
-     TC faktiskt läser den fältet). Guiden är därför byggd för att FALLERA
-     TYST (bara ett meddelande i note-rutan) om något av detta inte stämmer
-     — resten av panelen (offset/rotation/nedladdning/uppladdning) funkar
-     oavsett, med ankare (0,0,0) som reserv om bounding-boxen inte går att
-     hämta.
+     Det som är BEKRÄFTAT mot Trimbles officiella API-dokumentation
+     (components.connect.trimble.com/trimble-connect-workspace-api):
+     viewer.getObjectBoundingBoxes finns, och markup.addLineMarkups/
+     markup.removeMarkups finns med en dokumenterad LineMarkup-form
+     ({ id, start, end, color }, där start/end är MarkupPick-objekt med
+     positionX/Y/Z i MILLIMETER — våra egna världskoordinater är annars
+     meter rakt igenom filen, så vi multiplicerar med 1000 precis vid
+     anropet till markup-API:et). Det som INTE gick att bekräfta (och
+     alltså är en kvalificerad gissning tills ni testat i er egen miljö):
+     exakt form på svaret från getObjectBoundingBoxes (antar
+     {boundingBox:{min,max}} med {x,y,z}-fält) samt om MarkupPick:s
+     koordinatsystem verkligen har samma origo/axelriktning som
+     bounding-boxens värdsvärden i just er TC-miljö. Guiden är därför
+     byggd för att FALLERA TYST (bara ett meddelande i note-rutan) om
+     något av detta inte stämmer — resten av panelen (offset/rotation/
+     nedladdning/uppladdning) funkar oavsett, med ankare (0,0,0) som
+     reserv om bounding-boxen inte går att hämta.
      ===================================================================== */
   async _toggle3dPanel(){
     const willShow = !this.el.panel3d.classList.contains("dp-show");
@@ -4227,7 +4226,7 @@ class DrawingPreviewWidget{
     if(!item) return;
     this.el.panel3d.classList.add("dp-show");
     this._3dAnchors = null; // { center, min, max } i världskoordinater, eller null
-    this._guideIcons = [];
+    this._guideMarkupIds = [];
     this._setNote3d("Hämtar ankarpunkt (bounding box) för det markerade objektet…");
     await this._fetch3dAnchor();
     await this._recompute3d({ updateGuide:true });
@@ -4297,30 +4296,47 @@ class DrawingPreviewWidget{
     return this._last3d;
   }
   async _updateGuide3d(placement){
-    console.log("[TC 3D] Uppdatera guide klickad/körs. tcApi.viewer.addIcon finns:", !!tcApi?.viewer?.addIcon);
-    if(!tcApi?.viewer?.addIcon){
-      this._setNote3d("Kunde inte visa guiden — viewer.addIcon verkar inte finnas i den här TC-miljön/versionen. Resten av panelen funkar ändå.");
+    console.log("[TC 3D] Uppdatera guide klickad/körs. tcApi.markup.addLineMarkups finns:", !!tcApi?.markup?.addLineMarkups);
+    if(!tcApi?.markup?.addLineMarkups){
+      this._setNote3d("Kunde inte visa guiden — markup.addLineMarkups verkar inte finnas i den här TC-miljön/versionen. Resten av panelen funkar ändå.");
       return;
     }
     await this._clearGuide3d();
     try{
-      const icons = placement.corners.map((p,i)=>({ id: Date.now()+i, iconPath: GUIDE_ICON_PNG, position: p, size: 0.3 }));
-      console.log("[TC 3D] anropar addIcon med:", icons);
-      await tcApi.viewer.addIcon(icons);
-      this._guideIcons = icons;
-      console.log("[TC 3D] addIcon returnerade utan fel (inget kastat fel betyder INTE nödvändigtvis att punkterna syns — se konsolen ovan för exakt payload, och kolla 3D-vyn).");
-      this._setNote3d('addIcon anropades utan fel (se webbläsarkonsolen, F12, för exakt vad som skickades). Syns INGA punkter ändå i 3D-vyn kan orsaken vara fel enhet på "size" '
-        + '(antagen meter) eller fel koordinatsystem för "position" — berätta gärna vad du ser (eller inte ser) så justerar jag.');
+      // MarkupAPI.LineMarkup: { id, start, end, color }, där start/end är
+      // MarkupPick-objekt med positionX/Y/Z i MILLIMETER (bekräftat mot
+      // Trimbles officiella API-dokumentation). Våra egna världskoordinater
+      // (bounding box, ankare, offset, corners från computePlanePlacement)
+      // är meter rakt igenom filen — vi konverterar till mm precis här,
+      // vid gränsytan mot markup-API:et, och ingen annanstans.
+      const toMm = p => ({ positionX: p.x*1000, positionY: p.y*1000, positionZ: p.z*1000 });
+      const baseId = Date.now();
+      const color = { r:255, g:170, b:0, a:255 };
+      const corners = placement.corners; // 4 hörn, medurs/moturs runt plattan
+      const lineMarkups = corners.map((p,i) => ({
+        id: baseId + i,
+        start: toMm(p),
+        end: toMm(corners[(i+1) % corners.length]),
+        color,
+      }));
+      console.log("[TC 3D] anropar markup.addLineMarkups med:", lineMarkups);
+      const created = await tcApi.markup.addLineMarkups(lineMarkups);
+      this._guideMarkupIds = (Array.isArray(created) && created.length ? created : lineMarkups).map(m => m.id);
+      console.log("[TC 3D] addLineMarkups returnerade utan fel. Markup-id:n:", this._guideMarkupIds);
+      this._setNote3d('Guiden ritas nu som fyra riktiga linjer (Trimble Connects egen "LineMarkup"-typ) som bildar plattans bounding box direkt i 3D-vyn. '
+        + 'Syns ingen box ändå kan det bero på att markup-lagret är dolt/avstängt i vyinställningarna, eller att koordinatsystemet för markups skiljer sig från '
+        + 'bounding-boxens i just er TC-miljö — berätta gärna vad du ser (eller inte ser) så justerar jag.');
     }catch(err){
-      console.warn("[TC 3D] addIcon kastade ett fel (guiden kunde inte visas). Fullt objekt:", err, "Nycklar:", err&&typeof err==="object"?Object.keys(err):null);
-      this._setNote3d(`addIcon gav ett fel: "${describeError(err)}" (fullständigt objekt i konsolen, F12) — troligen skiljer sig PointIcon-formatet, eller så finns inte addIcon i den här TC-versionen. Resten av panelen funkar ändå.`);
+      console.warn("[TC 3D] markup.addLineMarkups kastade ett fel (guiden kunde inte visas). Fullt objekt:", err, "Nycklar:", err&&typeof err==="object"?Object.keys(err):null);
+      this._guideMarkupIds = [];
+      this._setNote3d(`markup.addLineMarkups gav ett fel: "${describeError(err)}" (fullständigt objekt i konsolen, F12) — resten av panelen funkar ändå.`);
     }
   }
   async _clearGuide3d(){
-    if(!this._guideIcons?.length || !tcApi?.viewer?.removeIcon) { this._guideIcons=[]; return; }
-    try{ await tcApi.viewer.removeIcon(this._guideIcons); }
-    catch(err){ console.warn("[TC] removeIcon misslyckades:", err); }
-    this._guideIcons = [];
+    if(!this._guideMarkupIds?.length || !tcApi?.markup?.removeMarkups) { this._guideMarkupIds=[]; return; }
+    try{ await tcApi.markup.removeMarkups(this._guideMarkupIds); }
+    catch(err){ console.warn("[TC] markup.removeMarkups misslyckades:", err); }
+    this._guideMarkupIds = [];
   }
   async _download3d(){
     const res = await this._recompute3d({ updateGuide:false });
