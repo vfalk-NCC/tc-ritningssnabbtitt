@@ -289,6 +289,7 @@
   .dp-zone-point-row input{ width:100px; background:#1c1d20; border:1px solid var(--border); border-radius:4px;
     color:var(--text); padding:5px 6px; font-size:12px; }
   .dp-zone-point-row .dp-zone-point-label{ width:52px; color:var(--text-dim); font-size:11px; }
+  .dp-zone-point-row .dp-zone-point-pin{ padding:5px 8px; }
   .dp-zone-point-row .dp-zone-point-remove{ margin-left:auto; }
   #dp-zone-form-actions{ display:flex; gap:8px; flex-wrap:wrap; }
   #dp-zones-footer{ border-top:1px solid var(--border); padding:10px 14px; display:flex; gap:8px;
@@ -503,6 +504,13 @@
       Om zoner överlappar vinner den FÖRSTA zonen i listan som träffar — ordna dem i listan efter behov. Du kan alltid
       skriva över taggningen för hand i den projektomfattande listan efteråt — då rör zonerna inte den filen igen
       förrän du själv tömmer fältet där.
+      <br><br>
+      Du fyller i varje hörn som N/E-siffror, eller markerar ett objekt i 3D-vyn och trycker på 📍 vid hörnet så
+      hämtas koordinaten automatiskt (mittpunkten av objektets bounding box). Trimbles API kan inte läsa av var man
+      klickar i själva 3D-modellen — bara bounding boxen för ett redan markerat objekt — så 📍-knappen ger dig
+      objektets mittpunkt, inte den exakta pixeln du klickade på. Vi antar också att modellens X-axel motsvarar
+      Easting (E) och Y-axel Northing (N), vilket är vanligt i svenska BIM-modeller men INTE bekräftat för just det
+      här projektet — kontrollera gärna mot en känd referenspunkt första gången, och hör av dig om hörnen hamnar fel.
     </div>
     <div id="dp-zones-list"></div>
     <div id="dp-zones-empty" style="display:none;">Inga zoner definierade än — lägg till en nedan.</div>
@@ -736,6 +744,27 @@ async function handleSelectionChanged(eventArg){
   }catch(err){
     console.error("[TC] getObjectProperties misslyckades:", err);
   }
+}
+
+// Delad helper: hämtar bounding box (min/max/center) för det objekt som just
+// nu är markerat i 3D-vyn. Används både av "Lägg till i 3D-vy"-panelens
+// ankarpunkt (_fetch3dAnchor) och av Zonpanelens "hämta från markerat
+// objekt"-knapp. Bekräftad begränsning: Trimbles Workspace API kan INTE läsa
+// av var man klickar i själva 3D-modellen (ingen "pick point"-funktion) —
+// det enda som går att fråga om är bounding-boxen för ett REDAN MARKERAT
+// objekt via viewer.getObjectBoundingBoxes(modelId, [runtimeId]).
+async function fetchSelectedObjectBoundingBox(){
+  if(!tcApi?.viewer?.getObjectBoundingBoxes) throw new Error("viewer.getObjectBoundingBoxes finns inte i den här TC-miljön.");
+  if(!currentSelection?.modelId || currentSelection?.runtimeId==null) throw new Error("Inget objekt markerat i 3D-vyn.");
+  const res = await tcApi.viewer.getObjectBoundingBoxes(currentSelection.modelId, [currentSelection.runtimeId]);
+  const first = Array.isArray(res) ? res[0] : res;
+  const bb = first?.boundingBox || first;
+  const min = bb?.min, max = bb?.max;
+  if(!min || !max || typeof min.x!=="number" || typeof max.x!=="number"){
+    throw new Error("Oväntat svarsformat från getObjectBoundingBoxes (se konsolen).");
+  }
+  const center = { x:(min.x+max.x)/2, y:(min.y+max.y)/2, z:(min.z+max.z)/2 };
+  return { min, max, center };
 }
 
 async function openPopupForSelection(sel){
@@ -2533,6 +2562,21 @@ function labelAt(ctx,x,y,text){
   ctx.textAlign = "left";
 }
 
+/* Liten markör (fylld prick + vit kant) som visar VAR den första punkten i
+   ett tvåklicksverktyg (Kalibrera/Mät avstånd) landade, innan andra klicket
+   är gjort — annars är den punkten helt osynlig och man "mäter i blindo"
+   tills man redan klickat klart. Samma visuella språk som de dragbara
+   handtagen på färdiga linjer/pilar (se drawAnnotationItem "selected"-läget
+   för line/arrow längre ner). */
+function drawPointMarker(ctx, p, color){
+  ctx.save();
+  ctx.fillStyle = color || "#3d9bff";
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
 /* Formaterar ett mått i px till verklig enhet om ritningen är kalibrerad. */
 function formatMeasure(px, scale, suffix){
   if(scale && scale.pxPerUnit){
@@ -2620,12 +2664,28 @@ function drawAnnotationItem(ctx,w,h,item,selected,scale,zoom=1){
       break;
     }
     case "measureDistance": {
-      const a=P(item.points[0]), b=P(item.points[1]);
+      const a=P(item.points[0]);
+      // Bara EN punkt hittills (första klicket gjort, väntar på det andra)
+      // — visa var den landade istället för att inte rita ut något alls.
+      // Se _onMove/_onDown: pendingPoly skickas nu som "preview" hela vägen
+      // från första klicket, så den här grenen träffas medan man siktar
+      // mot punkt nummer två (musen har inte hunnit röra sig än).
+      if(item.points.length<2){ drawPointMarker(ctx,a,"#e0a63a"); break; }
+      const b=P(item.points[1]);
       ctx.save(); ctx.setLineDash([5,4]);
       ctx.strokeStyle="#e0a63a"; ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
       ctx.restore();
-      const d=Math.hypot(b.x-a.x,b.y-a.y);
+      drawPointMarker(ctx,a,"#e0a63a"); drawPointMarker(ctx,b,"#e0a63a");
+      // BUGFIX (2026-09-14): d mäts i CANVASENS AKTUELLA pixlar (via P()),
+      // vilka ändras när man zoomar (se _resizeCanvases — canvas.width/height
+      // skalas med zoom). scale.pxPerUnit sattes en gång vid kalibrerings-
+      // tillfället (i EN viss zoomnivås pixlar, se motsvarande bugfix i
+      // _onDown) — utan att dela bort den AKTUELLA zoomen här skulle samma
+      // fysiska linje visa olika mått beroende på hur inzoomat man råkar
+      // vara just då. Att dela d med zoom normaliserar tillbaka till samma
+      // "bas"-pixelskala som kalibreringen use.
+      const d=Math.hypot(b.x-a.x,b.y-a.y)/zoom;
       labelAt(ctx,(a.x+b.x)/2,(a.y+b.y)/2, formatMeasure(d, scale, ""));
       break;
     }
@@ -2644,17 +2704,45 @@ function drawAnnotationItem(ctx,w,h,item,selected,scale,zoom=1){
       const cx=pts.reduce((s,p)=>s+p.x,0)/pts.length, cy=pts.reduce((s,p)=>s+p.y,0)/pts.length;
       if(pts.length>2){
         if(item.type==="measurePerimeter"){
+          // Samma zoom-bugfix som measureDistance ovan — se den kommentaren.
           let per=0; for(let i=0;i<pts.length;i++){ const n=pts[(i+1)%pts.length]; per+=Math.hypot(n.x-pts[i].x,n.y-pts[i].y); }
+          per /= zoom;
           labelAt(ctx,cx,cy, "O: " + formatMeasure(per, scale, ""));
         } else {
+          // Area byggs av PIXELKOORDINATER i två dimensioner, så den skalar med
+          // zoom² (inte zoom) — måste delas med zoom*zoom, inte bara zoom, för
+          // att bli oberoende av aktuell zoomnivå (samma bugg/samma fix-princip
+          // som ovan, men kvadrerad eftersom area är en yta).
           let area=0; for(let i=0;i<pts.length;i++){ const n=pts[(i+1)%pts.length]; area+=pts[i].x*n.y-n.x*pts[i].y; }
-          area=Math.abs(area)/2;
+          area=Math.abs(area)/2/(zoom*zoom);
           const label = scale && scale.pxPerUnit
             ? `A: ${(area/(scale.pxPerUnit*scale.pxPerUnit)).toFixed(2)} ${scale.unit}²`
             : `A: ${area.toFixed(0)} px²*`;
           labelAt(ctx,cx,cy,label);
         }
       }
+      break;
+    }
+    case "calibrate-pending": {
+      // Ren förhandsvisning under själva kalibreringen (aldrig sparad som
+      // ett riktigt item) — se _onDown/_onMove. Samma idé som measureDistance
+      // ovan: visa punkten direkt vid första klicket, och en linje som följer
+      // muspekaren fram till andra klicket, istället för att inget syns förrän
+      // man redan klickat klart och prompten för verklig längd dyker upp.
+      const a=P(item.points[0]);
+      if(item.points.length<2){ drawPointMarker(ctx,a,"#ffffff"); break; }
+      const b=P(item.points[1]);
+      ctx.save(); ctx.setLineDash([2,2]);
+      ctx.strokeStyle="#ffffff"; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      ctx.restore();
+      drawPointMarker(ctx,a,"#ffffff"); drawPointMarker(ctx,b,"#ffffff");
+      // Samma zoom-bugfix som measureDistance (se den kommentaren) — annars
+      // visar redan LIVE-etiketten under själva kalibreringen ett värde som
+      // inte stämmer med det man sen skriver in i prompten om man hunnit
+      // zooma sen man startade kalibreringen.
+      const d=Math.hypot(b.x-a.x,b.y-a.y)/zoom;
+      labelAt(ctx,(a.x+b.x)/2,(a.y+b.y)/2, formatMeasure(d, scale, ""));
       break;
     }
     case "calibration": {
@@ -3091,6 +3179,22 @@ class AnnotationEngine{
     return { x:(e.clientX-r.left)/r.width, y:(e.clientY-r.top)/r.height };
   }
   _dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+  // Shift-läge för linje/pil/kalibrering/mät avstånd: låser andra punkten
+  // till närmaste 45°-steg (0/45/90/135/180/225/270/315°) räknat från den
+  // första punkten, med bibehållet avstånd. Måste räkna i FAKTISKA
+  // canvas-pixlar (inte de normaliserade 0–1-koordinaterna som points
+  // faktiskt lagras i) — annars blir t.ex. 45° visuellt skevt så fort
+  // canvasen inte är kvadratisk (bredd ≠ höjd), eftersom en normaliserad
+  // x-andel och y-andel då motsvarar olika många skärmpixlar.
+  _snapAngle(a, b){
+    const w=this.canvas.width, h=this.canvas.height;
+    const dxPx=(b.x-a.x)*w, dyPx=(b.y-a.y)*h;
+    const dist=Math.hypot(dxPx,dyPx);
+    if(dist<1e-6) return {...b};
+    const step=Math.PI/4;
+    const angle=Math.round(Math.atan2(dyPx,dxPx)/step)*step;
+    return { x: a.x + (Math.cos(angle)*dist)/w, y: a.y + (Math.sin(angle)*dist)/h };
+  }
   _cursorForPart(part){
     if(part==="anchor" || part==="p0" || part==="p1") return "crosshair";
     if(part==="resize-nw" || part==="resize-se") return "nwse-resize";
@@ -3126,10 +3230,17 @@ class AnnotationEngine{
       return;
     }
     if(this.tool==="calibrate"){
-      if(!this.pendingPoly){ this.pendingPoly = {type:"calibrate-pending", points:[p]}; this.render(); return; }
-      this.pendingPoly.points.push(p);
+      if(!this.pendingPoly){ this.pendingPoly = {type:"calibrate-pending", points:[p]}; this.render(this.pendingPoly); return; }
+      const p2 = e.shiftKey ? this._snapAngle(this.pendingPoly.points[0], p) : p;
+      this.pendingPoly.points.push(p2);
       const [a,b] = this.pendingPoly.points;
-      const pxDist = Math.hypot((b.x-a.x)*this.canvas.width, (b.y-a.y)*this.canvas.height);
+      // BUGFIX (2026-09-14): dela bort AKTUELL zoom här också (se
+      // drawAnnotationItem/measureDistance-kommentaren) — annars sparas
+      // pxPerUnit i just DEN zoomnivåns pixlar, och alla mått man sen tar
+      // (i EN ANNAN zoomnivå) blir fel i proportion till hur mycket
+      // zoomnivån hunnit ändras sen kalibreringen gjordes.
+      const zoom = this.getZoom() || 1;
+      const pxDist = Math.hypot((b.x-a.x)*this.canvas.width, (b.y-a.y)*this.canvas.height) / zoom;
       this.pendingPoly = null;
       const realLength = window.prompt("Verklig längd för den markerade linjen (t.ex. 1000):", "1000");
       const unit = window.prompt("Enhet:", TC_CONFIG.MEASURE_UNIT) || TC_CONFIG.MEASURE_UNIT;
@@ -3142,13 +3253,16 @@ class AnnotationEngine{
       return;
     }
     if(this.tool==="measureDistance"){
-      if(!this.pendingPoly){ this.pendingPoly = {type:"measureDistance", points:[p]}; }
-      else {
-        this.pendingPoly.points.push(p);
-        this.items.push(this.pendingPoly);
-        this.pendingPoly = null;
-        this.persist();
+      if(!this.pendingPoly){
+        this.pendingPoly = {type:"measureDistance", points:[p]};
+        this.render(this.pendingPoly);
+        return;
       }
+      const p2 = e.shiftKey ? this._snapAngle(this.pendingPoly.points[0], p) : p;
+      this.pendingPoly.points.push(p2);
+      this.items.push(this.pendingPoly);
+      this.pendingPoly = null;
+      this.persist();
       this.render();
       return;
     }
@@ -3213,12 +3327,33 @@ class AnnotationEngine{
     }
     if(this.pendingShape){
       if(this.pendingShape.type==="pen") this.pendingShape.points.push(p);
-      else this.pendingShape.points[1] = p;
+      else{
+        // Shift = lås linjen/pilen till 45°-steg (0/45/90/135/...) — se
+        // _snapAngle. _onUp committar sen bara det senast satta points[1]
+        // rakt av, så det räcker att snappa HÄR för att både förhands-
+        // visningen och slutresultatet blir rätt.
+        const p1 = (e.shiftKey && (this.pendingShape.type==="line"||this.pendingShape.type==="arrow"))
+          ? this._snapAngle(this.pendingShape.points[0], p) : p;
+        this.pendingShape.points[1] = p1;
+      }
       this.render(this.pendingShape);
       return;
     }
     if(this.pendingPoly && (this.tool==="measurePerimeter"||this.tool==="measureArea")){
       this.render({...this.pendingPoly, points:[...this.pendingPoly.points, p]});
+      return;
+    }
+    // Kalibrera/Mät avstånd: EN punkt redan satt (första klicket), väntar på
+    // det andra — rita en levande linje från den punkten till muspekaren så
+    // man ser exakt var måttet hamnar (se drawAnnotationItem "calibrate-
+    // pending"/"measureDistance": punkt #2 här är bara för FÖRHANDSVISNING,
+    // den skrivs aldrig till pendingPoly.points förrän man faktiskt klickar).
+    // Shift snapper linjen till 45°-steg, samma som line/arrow ovan — se
+    // _onDown för motsvarande snappning av den FAKTISKA slutpunkten.
+    if(this.pendingPoly && this.pendingPoly.points.length===1
+       && (this.tool==="calibrate"||this.tool==="measureDistance")){
+      const p1 = e.shiftKey ? this._snapAngle(this.pendingPoly.points[0], p) : p;
+      this.render({...this.pendingPoly, points:[this.pendingPoly.points[0], p1]});
       return;
     }
   }
@@ -3476,12 +3611,32 @@ class ZonesPanel{
     const eInput = document.createElement("input");
     eInput.type = "number"; eInput.step = "0.01"; eInput.placeholder = "E"; eInput.value = E;
     eInput.title = "SWEREF99 20 15 — Easting (E), meter";
+    const pinBtn = document.createElement("button");
+    pinBtn.className = "dp-btn dp-zone-point-pin";
+    pinBtn.textContent = "📍";
+    pinBtn.title = "Hämta N/E från markerat objekt i 3D-vyn";
+    pinBtn.addEventListener("click", async ()=>{
+      pinBtn.disabled = true;
+      try{
+        const { center } = await fetchSelectedObjectBoundingBox();
+        // Antagande: modellens X-axel = Easting (E) och Y-axel = Northing (N),
+        // vilket är svensk civil/BIM-konvention — men INTE bekräftat för just
+        // det här projektet. Om hörnen hamnar fel i zonen, hör av dig så kan
+        // vi byta konventionen.
+        nInput.value = center.y.toFixed(2);
+        eInput.value = center.x.toFixed(2);
+      }catch(err){
+        alert("Kunde inte hämta koordinat: " + (err?.message || err));
+      }finally{
+        pinBtn.disabled = false;
+      }
+    });
     const rmBtn = document.createElement("button");
     rmBtn.className = "dp-btn dp-zone-point-remove";
     rmBtn.textContent = "✕";
     rmBtn.title = "Ta bort hörnet";
     rmBtn.addEventListener("click", ()=>{ row.remove(); this._renumberPoints(); });
-    row.append(label, nInput, eInput, rmBtn);
+    row.append(label, nInput, eInput, pinBtn, rmBtn);
     this.el.points.appendChild(row);
   }
   _renumberPoints(){
@@ -4097,14 +4252,8 @@ class DrawingPreviewWidget{
       return;
     }
     try{
-      const res = await tcApi.viewer.getObjectBoundingBoxes(currentSelection.modelId, [currentSelection.runtimeId]);
-      console.log("[TC 3D] getObjectBoundingBoxes råsvar:", res);
-      const bb = (Array.isArray(res) ? res[0] : res)?.boundingBox || (Array.isArray(res) ? res[0] : res);
-      const min = bb?.min, max = bb?.max;
-      if(!min || !max || typeof min.x!=="number" || typeof max.x!=="number"){
-        throw new Error("Oväntat svarsformat (se raden \"getObjectBoundingBoxes råsvar\" ovan i konsolen för exakt vad som kom tillbaka).");
-      }
-      const center = { x:(min.x+max.x)/2, y:(min.y+max.y)/2, z:(min.z+max.z)/2 };
+      const { min, max, center } = await fetchSelectedObjectBoundingBox();
+      console.log("[TC 3D] bounding box för markerat objekt:", { min, max, center });
       this._3dAnchors = { center, min, max };
     }catch(err){
       console.warn("[TC 3D] getObjectBoundingBoxes misslyckades eller hade oväntad form. Fullt objekt:", err);
