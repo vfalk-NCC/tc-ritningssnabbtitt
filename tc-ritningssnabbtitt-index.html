@@ -67,6 +67,7 @@
     padding:4px 7px; font-size:11px; cursor:pointer; line-height:1; white-space:nowrap; }
   .dp-btn:hover{background:#333;}
   .dp-btn:disabled{opacity:.3; cursor:default;}
+  .dp-btn.dp-active{ background:var(--accent); border-color:var(--accent); color:#fff; }
   .dp-btn:disabled:hover{background:none;}
 
   /* ---------- Ritnings-/bildvyn — fyller hela sidopanelen (panel-body) ---------- */
@@ -232,6 +233,19 @@
     cursor:col-resize; z-index:3; }
   .dp-gcol-resize:hover, .dp-gcol-resize.dp-resizing{ background:rgba(61,155,255,.35); }
   .dp-global-row{ padding:6px 12px; cursor:default; }
+  /* Ihopfällbara "mapp"-rubriker (gruppering per område, se
+     GlobalIndexPanel._buildGroupHeader). Varje rad (dp-global-grid) är sin
+     EGEN grid — #dp-global-list-items är bara en enkel scrollande lista av
+     syskon-divar — så rubrikraden behöver ingen grid-column-regel, bara ett
+     eget flex-baserat utseende som spänner hela bredden av sig självt. */
+  .dp-global-group-header{ display:flex; align-items:center; gap:6px;
+    padding:6px 12px; margin:0; background:var(--panel-2); border-bottom:1px solid var(--border);
+    cursor:pointer; user-select:none; font-size:11px; font-weight:600; }
+  .dp-global-group-header:hover{ background:#333; }
+  .dp-global-group-chevron{ font-size:9px; color:var(--text-dim); width:10px; flex:0 0 auto; }
+  .dp-global-group-name{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dp-global-group-count{ font-size:10px; font-weight:400; color:var(--text-dim);
+    background:#1c1d20; border-radius:8px; padding:1px 7px; flex:0 0 auto; }
   .dp-global-cell-name{ display:flex; flex-direction:column; gap:1px; min-width:0; cursor:pointer; }
   .dp-global-cell-name .dp-attach-namerow{ display:flex; align-items:center; gap:5px; min-width:0; }
   .dp-global-cell-name .dp-attach-name{ max-width:none; flex:1 1 auto; }
@@ -334,6 +348,7 @@
       <div id="dp-global-list-filter">
         <input id="dp-global-search" type="text" placeholder="Sök namn, område eller kommentar…">
         <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
+        <button class="dp-btn" id="dp-global-group-btn" title="Gruppera listan i ihopfällbara mappar per område (och en mapp för otaggade filer)">🗂 Gruppera per område</button>
         <button class="dp-btn" id="dp-global-zones-btn" title="Hantera zoner — automatisk områdestaggning av foton utifrån deras GPS-koordinat (SWEREF99 20 15)">📍 Zoner…</button>
         <button class="dp-btn" id="dp-global-upload-standalone-btn" title="Ladda upp ett eller flera foton från din dator utan att koppla dem till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📷 Foto utan koppling…</button>
         <input type="file" id="dp-standalone-file-input" accept="image/*" multiple style="display:none;">
@@ -4120,6 +4135,7 @@ class GlobalIndexPanel{
       search: document.getElementById("dp-global-search"),
       head: document.getElementById("dp-global-table-head"),
       zonesBtn: document.getElementById("dp-global-zones-btn"),
+      groupBtn: document.getElementById("dp-global-group-btn"),
       uploadStandaloneBtn: document.getElementById("dp-global-upload-standalone-btn"),
       standaloneFileInput: document.getElementById("dp-standalone-file-input"),
       browseStandaloneBtn: document.getElementById("dp-global-browse-standalone-btn"),
@@ -4128,6 +4144,22 @@ class GlobalIndexPanel{
     this._standaloneMarkerIds = []; // id:n för den native 3D-markör (korsformad linje-guide) som just nu visar var senast öppnade fristående foto är taget, se _showStandaloneMarker
     this._sortField = "name";
     this._sortDir = "asc";
+    // Gruppering per område ("mappar" i listan, se _renderRows/_buildGroupHeader)
+    // — påslaget som förval, och ihågkommet per webbläsare (samma
+    // localStorage-mönster som kolumnbredderna ovan/nedan).
+    try{ this._groupByArea = JSON.parse(localStorage.getItem("rsst-global-group-by-area") ?? "true"); }
+    catch(err){ this._groupByArea = true; }
+    // Vilka områdes-"mappar" (nyckel = områdesnamn, "" = otaggat) som är
+    // hopfällda just nu — även det ihågkommet per webbläsare.
+    try{ this._collapsedAreas = new Set(JSON.parse(localStorage.getItem("rsst-global-collapsed-areas") || "[]")); }
+    catch(err){ this._collapsedAreas = new Set(); }
+    this.el.groupBtn.classList.toggle("dp-active", this._groupByArea);
+    this.el.groupBtn.addEventListener("click", ()=>{
+      this._groupByArea = !this._groupByArea;
+      this.el.groupBtn.classList.toggle("dp-active", this._groupByArea);
+      try{ localStorage.setItem("rsst-global-group-by-area", JSON.stringify(this._groupByArea)); }catch(err){}
+      this._renderRows();
+    });
     this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
     this.el.search.addEventListener("input", ()=> this._renderRows());
     this.el.zonesBtn.addEventListener("click", ()=> zonesPanel?.show());
@@ -4335,7 +4367,69 @@ class GlobalIndexPanel{
     }
 
     this.el.items.innerHTML = "";
-    list.forEach(([fileId, rec])=>{
+
+    // Gruppering i ihopfällbara "mappar" per område (+ en för otaggade
+    // filer) — se _buildGroupHeader. Bara meningsfullt när det faktiskt
+    // finns mer än en grupp att fälla ihop (t.ex. inte när områdesfiltret
+    // ovan redan begränsat listan till ett enda område) — annars visas
+    // listan platt, som tidigare.
+    if(this._groupByArea){
+      const groups = new Map(); // områdesnamn ("" = otaggat) -> [[fileId,rec], ...]
+      list.forEach(entry=>{
+        const key = entry[1].area || "";
+        if(!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(entry);
+      });
+      // Taggade områden alfabetiskt, otaggat-gruppen alltid sist (oavsett
+      // sorteringspilarna ovan, som bara styr ordningen INOM varje grupp).
+      const keys = [...groups.keys()].filter(k=>k!=="").sort((a,b)=>a.localeCompare(b,"sv"));
+      if(groups.has("")) keys.push("");
+
+      if(keys.length>1){
+        keys.forEach(key=>{
+          const rows = groups.get(key);
+          this.el.items.appendChild(this._buildGroupHeader(key, rows.length));
+          if(this._collapsedAreas.has(key)) return; // ihopfälld — bara rubriken syns
+          rows.forEach(([fileId, rec])=> this.el.items.appendChild(this._buildRow(fileId, rec)));
+        });
+        return;
+      }
+    }
+
+    list.forEach(([fileId, rec])=> this.el.items.appendChild(this._buildRow(fileId, rec)));
+  }
+
+  // Rubrikrad för en områdes-"mapp" — klick fäller ihop/ut gruppen (kommer
+  // ihåg valet i localStorage, se konstruktorn). "" som nyckel = de filer
+  // som saknar ifyllt område ("Otaggat").
+  _buildGroupHeader(key, count){
+    const collapsed = this._collapsedAreas.has(key);
+    const row = document.createElement("div");
+    row.className = "dp-global-group-header";
+    row.title = collapsed ? "Klicka för att fälla ut" : "Klicka för att fälla ihop";
+    const chevron = document.createElement("span");
+    chevron.className = "dp-global-group-chevron";
+    chevron.textContent = collapsed ? "▸" : "▾";
+    const name = document.createElement("span");
+    name.className = "dp-global-group-name";
+    name.textContent = key ? `📁 ${key}` : "📁 Otaggat";
+    const count_ = document.createElement("span");
+    count_.className = "dp-global-group-count";
+    count_.textContent = String(count);
+    row.append(chevron, name, count_);
+    row.addEventListener("click", ()=>{
+      if(this._collapsedAreas.has(key)) this._collapsedAreas.delete(key);
+      else this._collapsedAreas.add(key);
+      try{ localStorage.setItem("rsst-global-collapsed-areas", JSON.stringify([...this._collapsedAreas])); }
+      catch(err){ /* privat läge/blockerad lagring — ingen big deal, kör vidare utan att komma ihåg valet */ }
+      this._renderRows();
+    });
+    return row;
+  }
+
+  // Bygger EN tabellrad (samma fem kolumner som tidigare, nu bara flyttat
+  // till en egen metod så den kan återanvändas både platt och grupperad).
+  _buildRow(fileId, rec){
       const row = document.createElement("div");
       row.className = "dp-attach-row dp-global-row dp-global-grid";
 
@@ -4402,6 +4496,10 @@ class GlobalIndexPanel{
         const areas = [...new Set(Object.values(this._idx.files||{}).map(r=>r.area).filter(Boolean))]
           .sort((a,b)=>a.localeCompare(b,"sv"));
         this._rebuildAreaOptions(areas);
+        // Filen kan ha bytt "mapp" (område) — bygg om listan så den hamnar
+        // i rätt grupp direkt istället för att ligga kvar i den gamla tills
+        // nästa sökning/sortering råkar trigga en omritning.
+        if(this._groupByArea) this._renderRows();
       });
       areaCell.appendChild(area);
 
@@ -4435,8 +4533,7 @@ class GlobalIndexPanel{
       removeCell.appendChild(removeBtn);
 
       row.append(nameCell, dateCell, areaCell, commentCell, removeCell);
-      this.el.items.appendChild(row);
-    });
+      return row;
   }
 
   // Samma "ta bort koppling"-funktion som i bilagelistan för det markerade
