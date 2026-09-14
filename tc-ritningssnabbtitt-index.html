@@ -177,6 +177,26 @@
   #dp-modal-canvas-wrap.dp-pan-idle, #dp-modal-canvas-wrap.dp-pan-idle #dp-modal-annot{ cursor:grab; }
   #dp-modal-canvas-wrap.dp-panning, #dp-modal-canvas-wrap.dp-panning #dp-modal-annot{ cursor:grabbing !important; }
 
+  /* Videospelare — visas/döljs mot canvas/annot beroende på kind (se
+     DrawingPreviewWidget._showVideo/_showCanvasContent). Storlek sätts som
+     inline style i JS (samma baseW/baseH-beräkning som _resizeCanvases). */
+  #dp-modal-video{ display:block; background:#000; max-width:100%; }
+
+  /* 1-100%-laddningsindikator (foto/PDF) — se downloadAttachmentBlob och
+     DrawingPreviewWidget._setLoadProgress/_hideLoadProgress. Ligger ovanpå
+     canvasen som en halvgenomskinlig overlay, döljs helt annars. */
+  #dp-load-progress{ position:absolute; inset:0; z-index:3; display:none; flex-direction:column;
+    align-items:center; justify-content:center; gap:8px; background:rgba(0,0,0,.55);
+    color:#fff; font-size:11px; }
+  #dp-load-progress.dp-show{ display:flex; }
+  #dp-load-progress-bar{ width:140px; height:6px; border-radius:3px; background:rgba(255,255,255,.25); overflow:hidden; }
+  #dp-load-progress-fill{ height:100%; width:0%; background:var(--accent); border-radius:3px; transition:width .15s linear; }
+  /* Okänd totalstorlek (Content-Length inte exponerad över CORS, se
+     downloadAttachmentBlob) — glidande stapel istället för en riktig
+     procentsats, så man i alla fall ser att något händer. */
+  #dp-load-progress-fill.dp-indeterminate{ width:40% !important; animation:dp-load-indeterminate 1.1s ease-in-out infinite; }
+  @keyframes dp-load-indeterminate{ 0%{ margin-left:0%; } 50%{ margin-left:60%; } 100%{ margin-left:0%; } }
+
   /* ---------- Bilagelista (filnamn + kommentar, klick väljer & markerar i 3D) ---------- */
   #dp-attach-list{ max-height:110px; overflow-y:auto; flex:0 0 auto;
     background:var(--panel-2); border-bottom:1px solid var(--border); }
@@ -204,6 +224,10 @@
   #dp-global-search{ flex:1 1 160px; min-width:0; background:#1c1d20; border:1px solid var(--border);
     color:var(--text); font-size:11px; border-radius:4px; padding:4px 7px; font-family:inherit; }
   #dp-global-search::placeholder{ color:#5a5c60; }
+  /* Typfilter (Alla/Foto/PDF/Video) för startsidans "Alla filer"-lista —
+     samma knappstil/mönster som widgetens #dp-thumb-filter. */
+  #dp-global-kind-filter{ display:flex; gap:3px; flex:0 0 auto; }
+  #dp-global-kind-filter .dp-icon-btn{ width:auto; padding:0 6px; font-size:10px; }
   #dp-global-area-filter{ flex:0 1 120px; min-width:0; background:#1c1d20;
     border:1px solid var(--border); color:var(--text); font-size:11px; border-radius:4px; padding:4px 6px; }
 
@@ -347,6 +371,12 @@
       <div id="dp-global-list-hint">Markera ett objekt i 3D-vyn för att se dess kopplade ritningar och bilder — eller klicka en fil nedan för att hoppa dit. Foton utan objekt-koppling (📷-knappen till höger) zoomar istället kameran till fotots GPS-koordinat när du klickar på dem.</div>
       <div id="dp-global-list-filter">
         <input id="dp-global-search" type="text" placeholder="Sök namn, område eller kommentar…">
+        <div id="dp-global-kind-filter">
+          <button class="dp-icon-btn dp-active" data-kind="all" title="Visa alla filtyper">Alla</button>
+          <button class="dp-icon-btn" data-kind="image" title="Visa bara foton">🖼</button>
+          <button class="dp-icon-btn" data-kind="drawing" title="Visa bara PDF-ritningar">📄</button>
+          <button class="dp-icon-btn" data-kind="video" title="Visa bara videoklipp">🎬</button>
+        </div>
         <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
         <button class="dp-btn" id="dp-global-group-btn" title="Gruppera listan i ihopfällbara mappar per område (och en mapp för otaggade filer)">🗂 Gruppera per område</button>
         <button class="dp-btn" id="dp-global-zones-btn" title="Hantera zoner — automatisk områdestaggning av foton utifrån deras GPS-koordinat (SWEREF99 20 15)">📍 Zoner…</button>
@@ -376,6 +406,7 @@
           <button class="dp-icon-btn dp-active" data-filter="all" title="Visa alla">Alla</button>
           <button class="dp-icon-btn" data-filter="drawing" title="Visa bara ritningar">📄</button>
           <button class="dp-icon-btn" data-filter="image" title="Visa bara bilder">🖼</button>
+          <button class="dp-icon-btn" data-filter="video" title="Visa bara videoklipp">🎬</button>
         </div>
         <button class="dp-icon-btn" id="dp-link-existing" title="Länka en fil som redan finns i Trimble Connect (ingen uppladdning)">🔗</button>
         <button class="dp-icon-btn" id="dp-add-image" title="Bifoga fil (bild eller PDF-ritning) och koppla till objektet">📎</button>
@@ -496,6 +527,17 @@
         <div id="dp-modal-canvas-wrap">
           <canvas id="dp-modal-canvas"></canvas>
           <canvas id="dp-modal-annot"></canvas>
+          <!-- Videoklipp spelas upp direkt här (native kontroller) istället
+               för att ritas till canvasen ovan — se DrawingPreviewWidget._showVideo.
+               Canvas/annot och video visas aldrig samtidigt (kind styr vilket). -->
+          <video id="dp-modal-video" playsinline controls style="display:none;"></video>
+          <!-- 1-100%-laddningsindikator för foto/PDF-nedladdning (se
+               downloadAttachmentBlob/_setLoadProgress). Video använder INTE
+               den här — webbläsarens egna <video>-kontroller sköter buffring. -->
+          <div id="dp-load-progress">
+            <div id="dp-load-progress-bar"><div id="dp-load-progress-fill"></div></div>
+            <span id="dp-load-progress-text">Laddar…</span>
+          </div>
         </div>
         <div id="dp-empty" style="display:none;">Inga ritningar eller bilder kopplade till objektet</div>
         <div id="dp-loading">Hämtar bilagor…</div>
@@ -505,7 +547,7 @@
   </div>
 </div>
 
-<input type="file" id="dp-file-input" accept="image/*,application/pdf,.pdf" style="display:none;">
+<input type="file" id="dp-file-input" accept="image/*,application/pdf,.pdf,video/*" style="display:none;">
 
 <div id="dp-filepicker">
   <div id="dp-filepicker-header">
@@ -882,6 +924,22 @@ async function tcFetchJson(path){
 }
 
 const IMAGE_EXT = /\.(jpe?g|png|heic|heif|gif|bmp|webp)$/i;
+// Vanliga videoformat en telefon/kamera exporterar (mp4/mov från iPhone,
+// webm från Android/skärminspelningar). Ingen EXIF/GPS-läsning görs för
+// dessa (se _classifyUploadedFile-kommentaren och DEL 3b) — bara uppspelning
+// + markup, samma begränsning som gäller för PDF-ritningar idag.
+const VIDEO_EXT = /\.(mp4|mov|m4v|webm|avi|mkv)$/i;
+
+// Delad tremodell-klassificering (bild/video/ritning) utifrån filnamnet —
+// används överallt en fil kopplas/laddas upp/listas så att "video" bara
+// behöver definieras på ETT ställe (se VIDEO_EXT ovan). "drawing" är
+// samlingsbeteckningen för allt annat (i praktiken bara PDF, se
+// #dp-file-input:s accept-attribut).
+function classifyFileKind(name){
+  if(IMAGE_EXT.test(name || "")) return "image";
+  if(VIDEO_EXT.test(name || "")) return "video";
+  return "drawing";
+}
 
 async function getAttachmentsForObject(sel){
   if(!tcAccessToken){
@@ -908,12 +966,20 @@ async function getAttachmentsForObject(sel){
     }
   }));
 
-  const result = files.filter(Boolean).map(f => IMAGE_EXT.test(f.name || "") ? {
-    kind: "image", id: f.id, versionId: f.versionId, name: f.name,
-    capturedAt: f.createdOn ? new Date(f.createdOn).toLocaleDateString("sv-SE") : "–",
-  } : {
-    kind: "drawing", id: f.id, versionId: f.versionId, name: f.name,
-    revision: "–", discipline: "–", color: "#3d9bff",
+  const result = files.filter(Boolean).map(f => {
+    const kind = classifyFileKind(f.name);
+    if(kind==="image") return {
+      kind: "image", id: f.id, versionId: f.versionId, name: f.name,
+      capturedAt: f.createdOn ? new Date(f.createdOn).toLocaleDateString("sv-SE") : "–",
+    };
+    if(kind==="video") return {
+      kind: "video", id: f.id, versionId: f.versionId, name: f.name,
+      capturedAt: f.createdOn ? new Date(f.createdOn).toLocaleDateString("sv-SE") : "–",
+    };
+    return {
+      kind: "drawing", id: f.id, versionId: f.versionId, name: f.name,
+      revision: "–", discipline: "–", color: "#3d9bff",
+    };
   });
   // Bygger upp DEL 1d:s projektomfattande filindex allteftersom objekt
   // markeras — se den sektionen för varför (ingen bekräftad reverse-API).
@@ -922,24 +988,66 @@ async function getAttachmentsForObject(sel){
 }
 
 /* ---------------------------------------------------------------------
-   Ladda ner filinnehåll (PDF/bild) för en bilaga.
-   Bekräftat: GET /files/fs/{fileId}/downloadurl?versionId=&format=
-   returnerar en tillfällig signerad URL (DownloadURLResponse.url), som
-   sedan hämtas med en vanlig fetch (ingen Authorization-header behövs
-   på den andra begäran — url:en är redan signerad).
+   Hämtar bara den tillfälliga signerade nedladdnings-URL:en (utan att
+   hämta själva filinnehållet) — bruten ut ur downloadAttachmentBlob nedan
+   så den kan återanvändas av videospelaren (DrawingPreviewWidget._showVideo),
+   som medvetet INTE laddar ner hela klippet som en Blob i minnet (kan lätt
+   vara hundratals MB) utan bara sätter URL:en direkt som <video>-elementets
+   src och låter webbläsaren strömma/buffra den själv, med sin egen inbyggda
+   buffringsindikator.
+   Bekräftat: GET /files/fs/{fileId}/downloadurl?versionId=&format= returnerar
+   en tillfällig signerad URL (DownloadURLResponse.url).
    --------------------------------------------------------------------- */
-async function downloadAttachmentBlob(fileId, versionId, format){
-  if(!tcAccessToken){
-    if(TC_CONFIG.MOCK_FALLBACK) return null; // hanteras av mock-renderarna
-    throw new Error("Ingen access token.");
-  }
+async function getAttachmentDownloadUrl(fileId, versionId, format){
   const qs = new URLSearchParams();
   if(versionId) qs.set("versionId", versionId);
   if(format) qs.set("format", format);
   const { url } = await tcFetchJson(`/files/fs/${fileId}/downloadurl?${qs.toString()}`);
+  return url;
+}
+
+/* ---------------------------------------------------------------------
+   Ladda ner filinnehåll (PDF/bild) för en bilaga, med valfri
+   framstegsrapportering (onProgress(bytesLaddade, totaltAntalBytesEllerNull)
+   — anropas för varje mottagen chunk).
+
+   Totalstorleken (för att räkna ut en procentsats) läses ur svarets
+   Content-Length-header OM den är exponerad — INTE bekräftat att TC:s
+   signerade nedladdnings-URL:er (annan origin än extensionen, så CORS
+   styr vilka headrar som går att läsa) faktiskt gör det, så koden måste
+   klara att den saknas: då rapporteras bara antal bytes hämtade hittills
+   (total=null), och anroparen får visa en "X MB hämtat"-räknare istället
+   för en fast procentsats — se DrawingPreviewWidget._setLoadProgress.
+
+   Läses filen ändå utan onProgress (t.ex. ensurePdfDocForItem/vektor-
+   fångsten, som bara vill ha filen så fort som möjligt) tas den enkla,
+   ostreamade vägen precis som innan.
+   --------------------------------------------------------------------- */
+async function downloadAttachmentBlob(fileId, versionId, format, onProgress){
+  if(!tcAccessToken){
+    if(TC_CONFIG.MOCK_FALLBACK) return null; // hanteras av mock-renderarna
+    throw new Error("Ingen access token.");
+  }
+  const url = await getAttachmentDownloadUrl(fileId, versionId, format);
   const res = await fetch(url);
   if(!res.ok) throw new Error(`Filnedladdning misslyckades (${res.status})`);
-  return await res.blob();
+
+  if(!onProgress || !res.body || !res.body.getReader) return await res.blob();
+
+  const totalHeader = res.headers.get("content-length");
+  const total = totalHeader!=null ? parseInt(totalHeader, 10) : null;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+  while(true){
+    const { done, value } = await reader.read();
+    if(done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    try{ onProgress(loaded, Number.isFinite(total) ? total : null); }
+    catch(cbErr){ console.warn("[nedladdning] progress-callback kastade fel:", cbErr); }
+  }
+  return new Blob(chunks);
 }
 
 /* ---------------------------------------------------------------------
@@ -1216,8 +1324,15 @@ async function tcLoadMarkupBlob(drawingId){
    och vi avgör kind utifrån filens namn/typ istället för att anta bild.
    --------------------------------------------------------------------- */
 function _classifyUploadedFile(file){
-  const isImage = IMAGE_EXT.test(file.name || "") || /^image\//.test(file.type || "");
-  return isImage ? "image" : "drawing";
+  // Filnamnets ändelse (classifyFileKind) räcker nästan alltid, men en fil
+  // vald via filväljaren har också en tillförlitlig webbläsarsatt MIME-typ
+  // (file.type) — används som extra fallback ifall namnet skulle sakna
+  // ändelse eller ha en vi inte känner igen.
+  const byName = classifyFileKind(file.name || "");
+  if(byName!=="drawing") return byName;
+  if(/^image\//.test(file.type || "")) return "image";
+  if(/^video\//.test(file.type || "")) return "video";
+  return "drawing";
 }
 async function tcUploadAttachment(sel, file){
   const kind = _classifyUploadedFile(file);
@@ -1225,7 +1340,7 @@ async function tcUploadAttachment(sel, file){
     if(TC_CONFIG.MOCK_FALLBACK){
       if(kind === "image") return makeImage();
       const d = makeDrawing();
-      return { ...d, name: file.name || d.name }; // behåll filens riktiga namn även i testläge
+      return { ...d, name: file.name || d.name, kind }; // behåll filens riktiga namn/kind även i testläge
     }
     throw new Error("Ingen access token.");
   }
@@ -1233,14 +1348,22 @@ async function tcUploadAttachment(sel, file){
     throw new Error("Inget valt objekt att koppla filen till.");
   }
   const folderId = await ensureDataFolder();
-  const filename = file.name || (kind === "image" ? `foto-${Date.now()}.jpg` : `ritning-${Date.now()}.pdf`);
+  const defaultName = kind==="image" ? `foto-${Date.now()}.jpg`
+    : kind==="video" ? `video-${Date.now()}.mp4`
+    : `ritning-${Date.now()}.pdf`;
+  const filename = file.name || defaultName;
   const { fileId, versionId } = await uploadFileToFolder(folderId, filename, file);
   await createObjectLink(sel.modelId, sel.guid, fileId);
 
-  return kind === "image" ? {
+  if(kind === "image") return {
     kind: "image", id: fileId, versionId, name: filename,
     capturedAt: new Date().toLocaleDateString("sv-SE"),
-  } : {
+  };
+  if(kind === "video") return {
+    kind: "video", id: fileId, versionId, name: filename,
+    capturedAt: new Date().toLocaleDateString("sv-SE"),
+  };
+  return {
     kind: "drawing", id: fileId, versionId, name: filename,
     revision: "–", discipline: "–", color: "#3d9bff",
   };
@@ -1315,10 +1438,12 @@ async function tcLinkExistingFile(sel, file){
     throw new Error("Inget valt objekt att koppla filen till.");
   }
   await createObjectLink(sel.modelId, sel.guid, file.id);
-  return IMAGE_EXT.test(file.name || "") ? {
-    kind: "image", id: file.id, versionId: file.versionId, name: file.name,
+  const kind = classifyFileKind(file.name);
+  if(kind!=="drawing") return {
+    kind, id: file.id, versionId: file.versionId, name: file.name,
     capturedAt: file.createdOn ? new Date(file.createdOn).toLocaleDateString("sv-SE") : "–",
-  } : {
+  };
+  return {
     kind: "drawing", id: file.id, versionId: file.versionId, name: file.name,
     revision: "–", discipline: "–", color: "#3d9bff",
   };
@@ -2315,7 +2440,7 @@ class ExistingFilePicker{
       const row = document.createElement("div");
       row.className = "dp-fp-item";
       const isFolder = it.type === "FOLDER";
-      const icon = isFolder ? "📁" : (IMAGE_EXT.test(it.name||"") ? "🖼" : "📄");
+      const icon = isFolder ? "📁" : kindIcon(classifyFileKind(it.name));
       row.innerHTML = `<span class="ic">${icon}</span><span>${it.name || "(namnlös)"}</span>`;
       if(isFolder){
         row.addEventListener("click", ()=>{
@@ -3084,7 +3209,7 @@ function _cacheEntry(id){
   return e;
 }
 
-async function renderRealDrawing(canvas, drawing){
+async function renderRealDrawing(canvas, drawing, onProgress){
   // I fristående/mock-läge (ingen access token) finns ingen riktig fil att
   // hämta — det är förväntat, inte ett fel, så vi visar platshållaren direkt
   // istället för att först försöka och logga en missvisande varning.
@@ -3094,7 +3219,7 @@ async function renderRealDrawing(canvas, drawing){
   }
   try{
     const entry = _cacheEntry(drawing.id);
-    if(!entry.blob) entry.blob = await downloadAttachmentBlob(drawing.id, drawing.versionId);
+    if(!entry.blob) entry.blob = await downloadAttachmentBlob(drawing.id, drawing.versionId, undefined, onProgress);
     if(!entry.blob || !window.pdfjsLib) throw new Error("Ingen fildata / pdf.js saknas");
     if(!entry.pdfDoc){
       const buf = await entry.blob.arrayBuffer();
@@ -3113,14 +3238,17 @@ async function renderRealDrawing(canvas, drawing){
   }
 }
 
-async function renderRealImage(canvas, imgItem){
+async function renderRealImage(canvas, imgItem, onProgress){
   if(!tcAccessToken && TC_CONFIG.MOCK_FALLBACK){
     renderPlaceholder(canvas, imgItem, `${imgItem.name}\n(testdata — ingen TC-anslutning)`);
     return;
   }
   try{
     const entry = _cacheEntry(imgItem.id);
-    if(!entry.blob) entry.blob = await downloadAttachmentBlob(imgItem.id, imgItem.versionId);
+    // onProgress skickas bara vidare till downloadAttachmentBlob när filen
+    // faktiskt måste hämtas — redan cachead (entry.blob satt sen tidigare
+    // öppning) ska inte trigga en (tom) laddningsindikator.
+    if(!entry.blob) entry.blob = await downloadAttachmentBlob(imgItem.id, imgItem.versionId, undefined, onProgress);
     if(!entry.blob) throw new Error("Ingen fildata");
     if(!entry.bitmap) entry.bitmap = await createImageBitmap(entry.blob);
     if(entry.exif === undefined){
@@ -3164,13 +3292,31 @@ async function renderRealImage(canvas, imgItem){
   }
 }
 
-function kindIcon(kind){ return kind==="image" ? "🖼" : "📄"; }
-function kindMeta(item){
-  return item.kind==="image" ? `Foto · Uppladdad ${item.capturedAt}` : `Rev. ${item.revision} · Disciplin ${item.discipline}`;
+function kindIcon(kind){ return kind==="image" ? "🖼" : kind==="video" ? "🎬" : "📄"; }
+// Läsbar filstorlek — används av DrawingPreviewWidget._setLoadProgress när
+// totalstorleken är okänd (se downloadAttachmentBlob) och bara antal
+// hämtade bytes kan visas, inte en procentsats.
+function _formatBytes(n){
+  if(n < 1024*1024) return Math.round(n/1024) + " KB";
+  return (n/1024/1024).toFixed(1) + " MB";
 }
-async function renderAttachment(canvas, item){
-  if(item.kind==="image") await renderRealImage(canvas, item);
-  else await renderRealDrawing(canvas, item);
+function kindMeta(item){
+  if(item.kind==="image") return `Foto · Uppladdad ${item.capturedAt}`;
+  if(item.kind==="video") return `Video · Uppladdad ${item.capturedAt}`;
+  return `Rev. ${item.revision} · Disciplin ${item.discipline}`;
+}
+// onProgress(loaded, totalOrNull) — se downloadAttachmentBlob — trängs igenom
+// hit så DrawingPreviewWidget kan visa en 1-100%-laddningsindikator för
+// foton/PDF:er (se _renderView/_setLoadProgress). Video hanteras INTE här —
+// videoklipp spelas upp direkt från en (kortlivad, signerad) TC-URL i ett
+// eget <video>-element istället för att laddas ner som en hel Blob i minnet
+// (se DrawingPreviewWidget._showVideo) — renderAttachment ska aldrig anropas
+// för kind:"video", bara som en extra säkerhetsspärr här ifall något annat
+// stället (t.ex. captureTextureJpeg-liknande 3D-fångst) råkar försöka.
+async function renderAttachment(canvas, item, onProgress){
+  if(item.kind==="image") await renderRealImage(canvas, item, onProgress);
+  else if(item.kind==="video") throw new Error("Video kan inte renderas till en canvas (används av 3D-fångst-funktionerna) — bara spelas upp direkt.");
+  else await renderRealDrawing(canvas, item, onProgress);
 }
 
 /* =====================================================================
@@ -4133,6 +4279,7 @@ class GlobalIndexPanel{
       items: document.getElementById("dp-global-list-items"),
       areaFilter: document.getElementById("dp-global-area-filter"),
       search: document.getElementById("dp-global-search"),
+      kindFilterBtns: document.getElementById("dp-global-kind-filter"),
       head: document.getElementById("dp-global-table-head"),
       zonesBtn: document.getElementById("dp-global-zones-btn"),
       groupBtn: document.getElementById("dp-global-group-btn"),
@@ -4162,6 +4309,18 @@ class GlobalIndexPanel{
     });
     this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
     this.el.search.addEventListener("input", ()=> this._renderRows());
+    // Typfilter (Alla/🖼 Foto/📄 PDF/🎬 Video) — samma data-attribut-mönster
+    // som widgetens #dp-thumb-filter (se DrawingPreviewWidget._bindFilterButtons).
+    this._kindFilter = "all";
+    const kindBtns = this.el.kindFilterBtns.querySelectorAll("[data-kind]");
+    kindBtns.forEach(b=>{
+      b.addEventListener("click", ()=>{
+        this._kindFilter = b.dataset.kind;
+        kindBtns.forEach(x=>x.classList.remove("dp-active"));
+        b.classList.add("dp-active");
+        this._renderRows();
+      });
+    });
     this.el.zonesBtn.addEventListener("click", ()=> zonesPanel?.show());
     this.el.uploadStandaloneBtn.addEventListener("click", ()=> this.el.standaloneFileInput.click());
     this.el.standaloneFileInput.addEventListener("change", ()=> this._uploadStandalonePhotos());
@@ -4341,6 +4500,7 @@ class GlobalIndexPanel{
     const activeArea = this.el.areaFilter.value;
     const q = this.el.search.value.trim().toLowerCase();
     let list = entries.filter(([,r])=>{
+      if(this._kindFilter!=="all" && r.kind!==this._kindFilter) return false;
       if(activeArea && (r.area||"")!==activeArea) return false;
       if(!q) return true;
       // Fritextsök över filnamn, objektnamn, område och kommentar samtidigt.
@@ -4830,6 +4990,7 @@ class DrawingPreviewWidget{
     this.currentObj = null;
     this.el.attachList.innerHTML = "";
     this._close3dPanel?.();
+    this._stopVideo();
     globalIndexPanel?._clearStandaloneMarker();
     globalIndexPanel?.show();
   }
@@ -4911,6 +5072,9 @@ class DrawingPreviewWidget{
     if(!willShow){ this._close3dPanel(); return; }
     const item = this._currentItem();
     if(!item) return;
+    // Knappen döljs redan för video i _renderView — det här är bara en extra
+    // spärr ifall den ändå nås (t.ex. hann klickas innan döljningen skett).
+    if(item.kind==="video"){ alert("3D-fångst gäller bara foton/PDF-ritningar, inte video."); return; }
     this.el.panel3d.classList.add("dp-show");
     this._3dAnchors = null; // { center, min, max } i världskoordinater, eller null
     this._guideMarkupIds = [];
@@ -5211,16 +5375,114 @@ class DrawingPreviewWidget{
       this.el.photoMeta.classList.remove("dp-show");
       this.engine.items = [];
       this.engine.render();
+      // Inget att visa (tomt objekt eller filtret dolde allt) — städa bort
+      // ev. kvarglömt videoläge från förra bilagan (annars fortsätter ett
+      // klipp spelas/buffras osynligt i bakgrunden, och zoom/ribbon/🧊
+      // skulle förbli dolda även om nästa bilaga som visas är ett foto).
+      this._stopVideo();
+      this._showCanvasLayer(true);
+      this.el.zoomWrap.style.display = "";
+      this.el.ribbon.style.display = "";
+      this.el.add3d.style.display = "";
       return;
     }
     this.el.empty.style.display = "none";
     const d = list[this.index];
     this.el.title.textContent = `${kindIcon(d.kind)} ${d.name} · ${kindMeta(d)}`;
+
+    // Zoom, markup-ribbonen och "Lägg till i 3D-vy" gäller bara stillbilder
+    // (foto/PDF) — döljs för video istället för att bara alerta vid klick,
+    // se _toggle3dPanel för en extra spärr ifall knappen ändå nås (t.ex.
+    // hann visas innan _renderView hann köra klart en gång).
+    const isVideo = d.kind==="video";
+    this.el.zoomWrap.style.display = isVideo ? "none" : "";
+    this.el.ribbon.style.display = isVideo ? "none" : "";
+    this.el.add3d.style.display = isVideo ? "none" : "";
+
+    if(isVideo){
+      this._showCanvasLayer(false);
+      await this._showVideo(d);
+      this._highlightActiveRow();
+      await this._updatePhotoMeta(d); // no-op för video (kind!=="image"), men konsekvent
+      return;
+    }
+
+    this._stopVideo();
+    this._showCanvasLayer(true);
     this._resizeCanvases();
-    await renderAttachment(this.el.canvas, d);
+    this._hideLoadProgress();
+    await renderAttachment(this.el.canvas, d, (loaded, total)=> this._setLoadProgress(loaded, total));
+    this._hideLoadProgress();
     await this.engine.loadForDrawing();
     this._highlightActiveRow();
     await this._updatePhotoMeta(d);
+  }
+  // Växlar mellan canvas/annot (foto/PDF, med markup) och <video>-elementet
+  // (video, native kontroller) — aldrig båda samtidigt, se HTML-kommentaren
+  // vid #dp-modal-video.
+  _showCanvasLayer(show){
+    this.el.canvas.style.display = show ? "" : "none";
+    this.el.annot.style.display = show ? "" : "none";
+    this.el.video.style.display = show ? "none" : "";
+  }
+  // Spelar upp ett videoklipp direkt från dess (kortlivade, signerade) TC-
+  // nedladdnings-URL — laddas INTE ner som en hel Blob i minnet (kan lätt
+  // vara hundratals MB för ett filmklipp), utan strömmas/buffras av
+  // webbläsarens egna <video>-element, med dess egen inbyggda
+  // buffringsindikator. Se getAttachmentDownloadUrl.
+  async _showVideo(item){
+    const rect = this.el.body.getBoundingClientRect();
+    this.el.video.style.width = Math.max(100, Math.round(rect.width - 48)) + "px";
+    this.el.video.style.maxHeight = Math.max(100, Math.round(rect.height - 48)) + "px";
+    try{
+      // Bara resetta/hämta ny URL om det faktiskt är ett ANNAT videoklipp än
+      // det som redan visas — annars skulle t.ex. ResizeObserver-triggade
+      // omritningar (_observeResize → _renderView → _showVideo) avbryta en
+      // pågående uppspelning varje gång panelen ändrar storlek.
+      if(this.el.video.dataset.itemId !== String(item.id)){
+        const url = await getAttachmentDownloadUrl(item.id, item.versionId);
+        this.el.video.pause();
+        this.el.video.src = url;
+        this.el.video.dataset.itemId = String(item.id);
+        this.el.video.load();
+      }
+    }catch(err){
+      console.warn("[video] kunde inte hämta nedladdnings-URL:", err);
+      this.el.video.removeAttribute("src");
+      delete this.el.video.dataset.itemId;
+      alert(`Kunde inte ladda videon "${item.name}": ${describeError(err)}`);
+    }
+  }
+  // Stoppar ev. pågående uppspelning/buffring när man lämnar ett videoklipp
+  // (byter bilaga eller stänger vyn) — annars fortsätter webbläsaren ladda
+  // ner klippet i bakgrunden i onödan.
+  _stopVideo(){
+    if(!this.el.video.src) return;
+    this.el.video.pause();
+    this.el.video.removeAttribute("src");
+    this.el.video.load();
+    delete this.el.video.dataset.itemId;
+  }
+  // 1-100%-laddningsindikator för foto/PDF (se downloadAttachmentBlob).
+  // total===null betyder att totalstorleken inte gick att läsa av (se
+  // kommentaren vid downloadAttachmentBlob) — visar då en "glidande" stapel
+  // + antal MB hämtat istället för en riktig procentsats.
+  _setLoadProgress(loaded, total){
+    this.el.loadProgress.classList.add("dp-show");
+    if(typeof total==="number" && total>0){
+      const pct = Math.max(0, Math.min(100, Math.round(loaded/total*100)));
+      this.el.loadProgressFill.classList.remove("dp-indeterminate");
+      this.el.loadProgressFill.style.width = pct + "%";
+      this.el.loadProgressText.textContent = `Laddar… ${pct}%`;
+    } else {
+      this.el.loadProgressFill.classList.add("dp-indeterminate");
+      this.el.loadProgressText.textContent = `Laddar… ${_formatBytes(loaded)}`;
+    }
+  }
+  _hideLoadProgress(){
+    this.el.loadProgress.classList.remove("dp-show");
+    this.el.loadProgressFill.classList.remove("dp-indeterminate");
+    this.el.loadProgressFill.style.width = "0%";
   }
   // Visar datum-taget + SWEREF99 20 15 + ev. zon-taggning ("Område") för
   // aktuellt foto, om EXIF-data hittades (satt av renderRealImage/
@@ -5412,7 +5674,10 @@ class DrawingPreviewWidget{
      annars skulle trigga en full omrendering (om än cachead, se DEL 3).
      --------------------------------------------------------------------- */
   _onWheelZoom(e){
-    if(!this.currentObj) return;
+    // Zoom gäller bara canvas-innehåll (foto/PDF) — video har ingen zoom
+    // (se _renderView, som döljer #dp-modal-zoom för video) och ska inte
+    // få sitt scroll/klick kapat här.
+    if(!this.currentObj || this._currentItem()?.kind==="video") return;
     e.preventDefault();
     const body = this.el.body;
     const rect = body.getBoundingClientRect();
@@ -5699,9 +5964,15 @@ class DrawingPreviewWidget{
       canvas: document.getElementById("dp-modal-canvas"),
       annot: document.getElementById("dp-modal-annot"),
       canvasWrap: document.getElementById("dp-modal-canvas-wrap"),
+      video: document.getElementById("dp-modal-video"),
+      loadProgress: document.getElementById("dp-load-progress"),
+      loadProgressFill: document.getElementById("dp-load-progress-fill"),
+      loadProgressText: document.getElementById("dp-load-progress-text"),
+      zoomWrap: document.getElementById("dp-modal-zoom"),
       zoomIn: document.getElementById("dp-zoom-in"),
       zoomOut: document.getElementById("dp-zoom-out"),
       zoomLevel: document.getElementById("dp-zoom-level"),
+      ribbon: document.getElementById("dp-ribbon"),
       attachList: document.getElementById("dp-attach-list"),
       photoMeta: document.getElementById("dp-photo-meta"),
 
