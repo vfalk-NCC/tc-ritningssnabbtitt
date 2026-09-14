@@ -625,7 +625,7 @@
    "YYYY-MM-DD HH:MM" i svensk tid (CET/CEST), satt av Claude vid varje
    leverad uppdatering.
    ===================================================================== */
-const APP_VERSION = "2026-09-14 16:44";
+const APP_VERSION = "2026-09-14 17:08";
 document.getElementById("ext-version").textContent = `(${APP_VERSION})`;
 
 /* =====================================================================
@@ -4780,6 +4780,13 @@ class GlobalIndexPanel{
         await unlinkAttachment(rec.modelId, rec.guid, fileId);
       }
       if(this._idx?.files) delete this._idx.files[fileId];
+      // BUGFIX: raden försvann ur listan direkt (this._idx muterades och
+      // _renderRows() nedan ritar om), men projektindexet på Trimble Connect
+      // (alla-kopplade-filer-index.json) sparades ALDRIG om — den ändringen
+      // fanns bara i minnet. Så fort sidan laddades om hämtades den gamla,
+      // osparade filen från TC igen och den "borttagna" raden dök upp på
+      // nytt. scheduleSaveProjectIndex() skriver faktiskt bort ändringen.
+      scheduleSaveProjectIndex();
     }catch(err){
       console.error("Kunde inte ta bort kopplingen:", err);
       alert("Kunde inte ta bort kopplingen: " + err.message);
@@ -5862,6 +5869,14 @@ class DrawingPreviewWidget{
   // bort direkt istället, så samma "soptunna" fungerar konsekvent oavsett
   // varifrån man öppnade bilden (annars skulle raden bara försvinna ur den
   // här vyn och dyka upp igen i startsidans lista).
+  //
+  // BUGFIX: för ett OBJEKT-kopplat foto togs bara själva Object Link:en bort
+  // i TC (unlinkAttachment) — projektindex-posten (idx.files[item.id], som
+  // "Alla filer"-listan på startsidan byggs från) städades ALDRIG bort här.
+  // Filen dök alltså kvar upp i startsidans lista — pekandes på en länk som
+  // inte längre fanns — tills man råkade öppna precis det objektet igen och
+  // trigga en ny recordInIndex-uppdatering. Nu städas indexposten (och en
+  // faktisk sparning schemaläggs) i BÅDA fallen, inte bara det fristående.
   async _removeAttachment(item){
     const isStandalone = !(tcAccessToken && currentSelection?.modelId && currentSelection?.guid);
     const confirmMsg = isStandalone
@@ -5871,12 +5886,13 @@ class DrawingPreviewWidget{
     try{
       if(tcAccessToken && currentSelection?.modelId && currentSelection?.guid){
         await unlinkAttachment(currentSelection.modelId, currentSelection.guid, item.id);
-      } else if(tcAccessToken){
+      }
+      if(tcAccessToken){
         try{
           const idx = await loadProjectIndex();
           if(idx.files) delete idx.files[item.id];
           scheduleSaveProjectIndex();
-        }catch(idxErr){ console.warn("[index] kunde inte ta bort fristående foto ur projektindexet:", idxErr); }
+        }catch(idxErr){ console.warn("[index] kunde inte ta bort filen ur projektindexet:", idxErr); }
       }
     }catch(err){
       console.error("Kunde inte ta bort kopplingen:", err);
