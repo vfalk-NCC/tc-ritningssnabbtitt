@@ -323,11 +323,13 @@
          enskilt objekts. Klick söker upp och markerar rätt objekt i 3D-vyn. -->
     <div id="dp-global-list">
       <div id="dp-global-list-header">Alla kopplade filer i projektet</div>
-      <div id="dp-global-list-hint">Markera ett objekt i 3D-vyn för att se dess kopplade ritningar och bilder — eller klicka en fil nedan för att hoppa dit.</div>
+      <div id="dp-global-list-hint">Markera ett objekt i 3D-vyn för att se dess kopplade ritningar och bilder — eller klicka en fil nedan för att hoppa dit. Foton utan objekt-koppling (📷-knappen till höger) zoomar istället kameran till fotots GPS-koordinat när du klickar på dem.</div>
       <div id="dp-global-list-filter">
         <input id="dp-global-search" type="text" placeholder="Sök namn, område eller kommentar…">
         <select id="dp-global-area-filter"><option value="">Alla områden</option></select>
         <button class="dp-btn" id="dp-global-zones-btn" title="Hantera zoner — automatisk områdestaggning av foton utifrån deras GPS-koordinat (SWEREF99 20 15)">📍 Zoner…</button>
+        <button class="dp-btn" id="dp-global-upload-standalone-btn" title="Ladda upp ett eller flera foton utan att koppla dem till något 3D-objekt — klicka på fotot i listan sen för att zooma till dess GPS-koordinat i 3D-vyn">📷 Foto utan koppling…</button>
+        <input type="file" id="dp-standalone-file-input" accept="image/*" multiple style="display:none;">
       </div>
       <div id="dp-global-table-head" class="dp-global-grid">
         <div class="dp-gth" data-sort="name">Namn <span class="dp-sort-arrow"></span><span class="dp-gcol-resize" data-col="name"></span></div>
@@ -1182,6 +1184,52 @@ async function tcUploadAttachment(sel, file){
     kind: "drawing", id: fileId, versionId, name: filename,
     revision: "–", discipline: "–", color: "#3d9bff",
   };
+}
+
+/* ---------------------------------------------------------------------
+   Ladda upp ETT foto UTAN att koppla det till något 3D-objekt (ingen
+   Object Link skapas). Svar på: "jag vill kunna ladda upp ett foto som
+   inte hör till ett specifikt objekt, och sen klicka mig fram till VAR
+   det togs via GPS-koordinaten i bilden istället för via en koppling".
+
+   Filen laddas upp till samma dolda datamapp som allt annat
+   (ensureDataFolder/uploadFileToFolder — samma funktion som den vanliga,
+   objekt-kopplade uppladdningen ovan använder), men registreras direkt i
+   projektindexet (recordStandaloneInIndex) istället för att gå via en
+   Object Link. EXIF/GPS läses ur filen INNAN uppladdning (samma
+   parseExifDateAndGps som renderRealImage använder för redan uppladdade
+   foton) så koordinaten finns sparad direkt — annars skulle "Tagga om
+   alla foton" och zoom-till-koordinat-klicket behöva vänta tills fotot
+   öppnats i visaren minst en gång (samma fälla som löstes i förra
+   omgången, se retagAllPhotosWithZones).
+
+   Foton UTAN GPS-data laddas fortfarande upp och listas — de går bara
+   inte att zooma till förrän/om en koordinat sätts på dem på något annat
+   sätt (t.ex. genom att flytta filen och ladda upp den igen med en bild
+   som faktiskt har platsdata). Anroparen (GlobalIndexPanel) informerar om
+   det via `hasCoord` i returvärdet. */
+async function tcUploadStandalonePhoto(file){
+  if(!tcAccessToken){
+    throw new Error("Kräver en aktiv Trimble Connect-anslutning — går inte att ladda upp fristående foton i fristående testläge.");
+  }
+  const isImage = IMAGE_EXT.test(file.name || "") || /^image\//.test(file.type || "");
+  if(!isImage) throw new Error(`"${file.name || "filen"}" verkar inte vara en bildfil.`);
+
+  let exif = null;
+  try{ exif = parseExifDateAndGps(await file.arrayBuffer()); }
+  catch(err){ console.warn("[foto] kunde inte läsa EXIF ur", file.name, err); }
+
+  const folderId = await ensureDataFolder();
+  const filename = file.name || `foto-${Date.now()}.jpg`;
+  const { fileId, versionId } = await uploadFileToFolder(folderId, filename, file);
+
+  const sweref = (exif?.lat!=null && exif?.lon!=null) ? wgs84ToSweref99_20_15(exif.lat, exif.lon) : null;
+  const rec = await recordStandaloneInIndex({ id: fileId, name: filename, versionId }, sweref, exif?.dateIso || null);
+  if(sweref){
+    try{ await autoTagZoneForFile(fileId, sweref); }
+    catch(err){ console.warn("[foto] kunde inte auto-tagga fristående foto mot zoner:", fileId, err); }
+  }
+  return { fileId, name: filename, hasCoord: !!sweref, rec };
 }
 
 /* =====================================================================
@@ -2263,6 +2311,28 @@ async function recordInIndex(sel, item){
   }catch(err){
     console.warn("[index] kunde inte registrera fil i projektindex:", err);
   }
+}
+
+// Samma sak som recordInIndex ovan, men för foton som laddas upp UTAN att
+// kopplas till något 3D-objekt (se tcUploadStandalonePhoto/"📷 Foto utan
+// koppling…"-knappen). modelId/guid/runtimeId är null och standalone:true,
+// så GlobalIndexPanel vet att rita/hantera raden annorlunda (klick zoomar
+// kameran till sweref istället för att markera ett objekt) och
+// _removeAttachment vet att den inte ska försöka ta bort en Object Link
+// som aldrig fanns.
+async function recordStandaloneInIndex(item, sweref, capturedDate){
+  const idx = await loadProjectIndex();
+  const prev = idx.files[item.id];
+  idx.files[item.id] = {
+    name: item.name, kind: "image", versionId: item.versionId || null,
+    modelId: null, guid: null, runtimeId: null, objectName: "",
+    standalone: true, updatedAt: new Date().toISOString(),
+    area: prev?.area || "", areaAuto: prev?.areaAuto || false, comment: prev?.comment || "",
+    sweref: sweref || prev?.sweref || null,
+    capturedDate: capturedDate || prev?.capturedDate || null,
+  };
+  scheduleSaveProjectIndex();
+  return idx.files[item.id];
 }
 
 // "Område"-fält (t.ex. "Sikthall", "Sektionsfickor") — antingen skrivet för
@@ -3860,6 +3930,8 @@ class GlobalIndexPanel{
       search: document.getElementById("dp-global-search"),
       head: document.getElementById("dp-global-table-head"),
       zonesBtn: document.getElementById("dp-global-zones-btn"),
+      uploadStandaloneBtn: document.getElementById("dp-global-upload-standalone-btn"),
+      standaloneFileInput: document.getElementById("dp-standalone-file-input"),
     };
     this._idx = null; // senast inlästa projektindex (cachead referens, se loadProjectIndex)
     this._sortField = "name";
@@ -3867,6 +3939,8 @@ class GlobalIndexPanel{
     this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
     this.el.search.addEventListener("input", ()=> this._renderRows());
     this.el.zonesBtn.addEventListener("click", ()=> zonesPanel?.show());
+    this.el.uploadStandaloneBtn.addEventListener("click", ()=> this.el.standaloneFileInput.click());
+    this.el.standaloneFileInput.addEventListener("change", ()=> this._uploadStandalonePhotos());
     this.el.head.querySelectorAll(".dp-gth").forEach(th=>{
       th.addEventListener("click", (e)=>{
         // Klick på draghandtaget (kolumnbredd) ska INTE räknas som klick på
@@ -3949,6 +4023,42 @@ class GlobalIndexPanel{
     this._renderRows();
   }
 
+  // "📷 Foto utan koppling…"-knappen: laddar upp en eller flera bilder rakt
+  // in i projektet UTAN att fråga om/kräva något markerat 3D-objekt (se
+  // tcUploadStandalonePhoto). Körs sekventiellt (inte Promise.all) så
+  // statusraden kan visa en tydlig "X/Y"-räknare och så att ett enstaka
+  // misslyckat foto inte stoppar resten.
+  async _uploadStandalonePhotos(){
+    const input = this.el.standaloneFileInput;
+    const files = [...(input.files || [])];
+    input.value = ""; // annars triggar inte samma fil "change" igen nästa gång
+    if(!files.length) return;
+
+    const btn = this.el.uploadStandaloneBtn;
+    const prevText = btn.textContent;
+    btn.disabled = true;
+    let ok = 0, noCoord = 0, failed = 0;
+    for(let i=0;i<files.length;i++){
+      btn.textContent = `Laddar upp… (${i+1}/${files.length})`;
+      try{
+        const { hasCoord } = await tcUploadStandalonePhoto(files[i]);
+        ok++;
+        if(!hasCoord) noCoord++;
+      }catch(err){
+        failed++;
+        console.error("[foto] kunde inte ladda upp fristående foto:", files[i].name, err);
+      }
+    }
+    btn.disabled = false;
+    btn.textContent = prevText;
+
+    const parts = [`${ok} av ${files.length} foto(n) uppladdade.`];
+    if(noCoord) parts.push(`${noCoord} st hade ingen GPS-data i bilden och går därför inte att zooma till.`);
+    if(failed) parts.push(`${failed} st misslyckades (se konsolen, F12).`);
+    alert(parts.join(" "));
+    await this.refresh();
+  }
+
   // Bygger om (a) områdes-filtrets alternativ, (b) sorteringspilarna i
   // tabellhuvudet och (c) själva tabellraderna, utifrån redan inläst
   // this._idx — anropas efter refresh() och varje gång användaren skriver
@@ -4000,15 +4110,19 @@ class GlobalIndexPanel{
       const row = document.createElement("div");
       row.className = "dp-attach-row dp-global-row dp-global-grid";
 
-      // Kolumn 1: Namn (ikon + filnamn, med objektnamn som liten undertext) — klick markerar objektet.
+      // Kolumn 1: Namn (ikon + filnamn, med objektnamn/koordinat som liten
+      // undertext) — klick markerar objektet (eller, för ett fristående
+      // foto utan objekt-koppling, zoomar kameran till dess GPS-koordinat).
       const nameCell = document.createElement("div");
       nameCell.className = "dp-global-cell-name";
-      nameCell.title = "Klicka för att markera objektet i 3D-vyn";
+      nameCell.title = rec.standalone
+        ? (rec.sweref ? "Klicka för att zooma till fotots koordinat i 3D-vyn" : "Inget objekt kopplat, och ingen GPS-koordinat hittades i bilden — inget att zooma till")
+        : "Klicka för att markera objektet i 3D-vyn";
       const nameRow = document.createElement("div");
       nameRow.className = "dp-attach-namerow";
       const icon = document.createElement("span");
       icon.className = "dp-attach-icon";
-      icon.textContent = kindIcon(rec.kind);
+      icon.textContent = rec.standalone ? "📍" : kindIcon(rec.kind);
       const name = document.createElement("span");
       name.className = "dp-attach-name";
       name.textContent = rec.name;
@@ -4016,7 +4130,9 @@ class GlobalIndexPanel{
       nameRow.append(icon, name);
       const objName = document.createElement("span");
       objName.className = "dp-attach-objname";
-      objName.textContent = rec.objectName ? `objekt: ${rec.objectName}` : "";
+      objName.textContent = rec.standalone
+        ? (rec.sweref ? `fristående foto — N ${rec.sweref.N} E ${rec.sweref.E}` : "fristående foto — ingen GPS-koordinat")
+        : (rec.objectName ? `objekt: ${rec.objectName}` : "");
       nameCell.append(nameRow, objName);
       nameCell.addEventListener("click", ()=> this._openFile(fileId, rec));
 
@@ -4099,7 +4215,10 @@ class GlobalIndexPanel{
   // radens EGNA modelId/guid (rec) istället för currentSelection, eftersom
   // den här listan visar filer oavsett vad som råkar vara markerat just nu.
   async _removeAttachment(fileId, rec){
-    if(!window.confirm(`Ta bort kopplingen till "${rec.name}"?\n\nSjälva filen i Trimble Connect påverkas inte — bara länken till objektet tas bort.`)) return;
+    const confirmMsg = rec.standalone
+      ? `Ta bort "${rec.name}" från listan?\n\nDet finns ingen objekt-koppling att ta bort (fotot laddades upp utan koppling) — bara raden i den här listan försvinner. Själva filen ligger kvar i Trimble Connect, i den dolda datamappen "${TC_DATA_FOLDER_NAME}", om du vill hämta den därifrån.`
+      : `Ta bort kopplingen till "${rec.name}"?\n\nSjälva filen i Trimble Connect påverkas inte — bara länken till objektet tas bort.`;
+    if(!window.confirm(confirmMsg)) return;
     try{
       if(tcAccessToken && rec.modelId && rec.guid){
         await unlinkAttachment(rec.modelId, rec.guid, fileId);
@@ -4129,6 +4248,10 @@ class GlobalIndexPanel{
   }
 
   async _openFile(fileId, rec){
+    if(rec.standalone){
+      await this._openStandalonePhoto(fileId, rec);
+      return;
+    }
     if(!tcApi?.viewer?.setSelection){
       alert("Kan inte markera objekt — viewer.setSelection saknas i api-ytan.");
       return;
@@ -4144,6 +4267,47 @@ class GlobalIndexPanel{
       console.warn("[TC] kunde inte markera objektet i modellen:", err);
       alert("Kunde inte markera objektet i modellen: " + err.message);
     }
+  }
+
+  // Klick på ett fristående (okopplat) foto: inget objekt att markera, så
+  // istället flyttas 3D-kameran direkt till fotots SWEREF-koordinat (samma
+  // markup.addLineMarkups-grannteknik hade dugt för en punktmarkör också,
+  // men viewer.setCamera är den riktiga "gå hit i modellen"-funktionen —
+  // bekräftad mot Trimbles officiella API-dokumentation). Visar sedan
+  // fotot i den vanliga bildvyn också, precis som ett klick på en
+  // objekt-kopplad fil gör.
+  async _openStandalonePhoto(fileId, rec){
+    if(!rec.sweref){
+      alert(`"${rec.name}" har ingen sparad GPS-koordinat (hittades inte i bildens EXIF-data vid uppladdning), så det går inte att zooma till den i 3D-vyn. Du kan fortfarande öppna och titta på fotot.`);
+    } else if(!tcApi?.viewer?.setCamera){
+      alert("Kan inte flytta kameran — viewer.setCamera saknas i api-ytan.");
+    } else {
+      // Antagande: modellens X-axel = Easting (E), Y-axel = Northing (N),
+      // Z-axel upp — samma konvention som resten av zonfunktionen använder
+      // (se ZonesPanel/📍-knappen). INTE bekräftat för just det här
+      // projektet.
+      const target = { x: rec.sweref.E, y: rec.sweref.N, z: 0 };
+      const CAM_OFFSET = 15; // meter — godtyckligt men rimligt avstånd för att se omgivningen
+      const position = { x: target.x, y: target.y - CAM_OFFSET, z: target.z + CAM_OFFSET };
+      try{
+        await tcApi.viewer.setCamera(
+          { position, lookAt: target, upDirection: { x:0, y:0, z:1 } },
+          { animationTime: 800 }
+        );
+      }catch(err){
+        console.warn("[TC] kunde inte flytta kameran till fotots koordinat:", err);
+        alert("Kunde inte flytta kameran till fotots koordinat: " + describeError(err));
+      }
+    }
+    // Rensa ev. gammal objekt-markering — den här vyn hör inte till något
+    // markerat objekt, så "Lägg till fler bilagor"-flödena i widgeten ska
+    // inte råka koppla mot ett kvarglömt föregående val.
+    currentSelection = null;
+    widget.showForObject({
+      name: rec.name, guid: null,
+      attachments: [{ kind: "image", id: fileId, versionId: rec.versionId, name: rec.name,
+        capturedAt: rec.capturedDate ? new Date(rec.capturedDate).toLocaleDateString("sv-SE") : "–" }],
+    });
   }
 }
 
@@ -4869,11 +5033,28 @@ class DrawingPreviewWidget{
   // Connect (den kan vara en fil som fanns där sen tidigare). I fristående
   // testläge (ingen access token) tas bilagan bara bort ur den lokala
   // listan, utan något TC-anrop.
+  //
+  // Ett fristående foto (öppnat via GlobalIndexPanel._openStandalonePhoto,
+  // se DEL 5b) har INGET markerat objekt (currentSelection är null) och
+  // alltså ingen Object Link att ta bort — då städas projektindex-posten
+  // bort direkt istället, så samma "soptunna" fungerar konsekvent oavsett
+  // varifrån man öppnade bilden (annars skulle raden bara försvinna ur den
+  // här vyn och dyka upp igen i startsidans lista).
   async _removeAttachment(item){
-    if(!window.confirm(`Ta bort kopplingen till "${item.name}"?\n\nSjälva filen i Trimble Connect påverkas inte — bara länken till det här objektet tas bort.`)) return;
+    const isStandalone = !(tcAccessToken && currentSelection?.modelId && currentSelection?.guid);
+    const confirmMsg = isStandalone
+      ? `Ta bort "${item.name}" från listan?\n\nFilen ligger kvar i Trimble Connect (i den dolda datamappen "${TC_DATA_FOLDER_NAME}") — bara raden försvinner härifrån och från startsidans lista.`
+      : `Ta bort kopplingen till "${item.name}"?\n\nSjälva filen i Trimble Connect påverkas inte — bara länken till det här objektet tas bort.`;
+    if(!window.confirm(confirmMsg)) return;
     try{
       if(tcAccessToken && currentSelection?.modelId && currentSelection?.guid){
         await unlinkAttachment(currentSelection.modelId, currentSelection.guid, item.id);
+      } else if(tcAccessToken){
+        try{
+          const idx = await loadProjectIndex();
+          if(idx.files) delete idx.files[item.id];
+          scheduleSaveProjectIndex();
+        }catch(idxErr){ console.warn("[index] kunde inte ta bort fristående foto ur projektindexet:", idxErr); }
       }
     }catch(err){
       console.error("Kunde inte ta bort kopplingen:", err);
