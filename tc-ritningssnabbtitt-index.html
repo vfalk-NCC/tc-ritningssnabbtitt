@@ -512,6 +512,11 @@
       objektets mittpunkt, inte den exakta pixeln du klickade på. Vi antar också att modellens X-axel motsvarar
       Easting (E) och Y-axel Northing (N), vilket är vanligt i svenska BIM-modeller men INTE bekräftat för just det
       här projektet — kontrollera gärna mot en känd referenspunkt första gången, och hör av dig om hörnen hamnar fel.
+      <br><br>
+      Allteftersom du fyller i hörn (för hand eller via 📍) ritas riktiga linjer (Trimble Connects egen markup-typ,
+      samma teknik som bounding box-guiden i "Lägg till i 3D-vy") direkt i 3D-vyn mellan hörnen, och slingan sluts
+      automatiskt så fort minst tre hörn är ifyllda — så du kan se zonens form innan du sparar. Linjerna är bara en
+      guide och rensas när du stänger panelen eller börjar på en ny zon.
     </div>
     <div id="dp-zones-list"></div>
     <div id="dp-zones-empty" style="display:none;">Inga zoner definierade än — lägg till en nedan.</div>
@@ -2881,13 +2886,18 @@ async function renderRealImage(canvas, imgItem){
       // kolumnen i den projektövergripande listan kan visa det utan att
       // själv behöva ladda ner/läsa EXIF ur filen.
       if(entry.exif?.dateIso) setIndexCapturedDate(imgItem.id, entry.exif.dateIso);
-      // Samma sak för GPS-koordinaten, omräknad till SWEREF99 20 15 — och
-      // direkt vidare till zonmatchningen (se ZONER-avsnittet) så att
-      // "Område" fylls i automatiskt första gången fotot öppnas, om det
-      // hamnar innanför en definierad zon och inte redan är manuellt ifyllt.
+      // Samma sak för GPS-koordinaten, omräknad till SWEREF99 20 15 — sparas
+      // i projektindexet direkt (fire-and-forget är okej HÄR, det är bara en
+      // spegling) så att "Tagga om alla foton"-knappen ser koordinaten även
+      // för foton som aldrig öppnats i den här vyn. Själva zonmatchningen
+      // (autoTagZoneForFile) körs däremot INTE här längre — den görs numera
+      // AWAITAD i _updatePhotoMeta (körs varje gång fotot visas), så att
+      // "Område"-raden i fotorutan alltid hinner bli klar innan den ritas
+      // upp. Tidigare kördes den fire-and-forget härifrån och hann nästan
+      // aldrig bli klar i tid, vilket gjorde att taggningen aldrig syntes.
       if(entry.exif?.lat!=null && entry.exif?.lon!=null){
         const sweref = wgs84ToSweref99_20_15(entry.exif.lat, entry.exif.lon);
-        setIndexSweref(imgItem.id, sweref).then(()=> autoTagZoneForFile(imgItem.id, sweref));
+        setIndexSweref(imgItem.id, sweref);
       }
     }
     const bitmap = entry.bitmap;
@@ -3531,6 +3541,7 @@ class ZonesPanel{
     };
     this._zonesData = null; // { zones:[...] } — senast inlästa (cachead referens, se loadZones)
     this._editingId = null; // id på zonen som redigeras, eller null = ny zon
+    this._guideZoneMarkupIds = []; // id:n för de linje-markups som just nu visar zonens hörn i 3D-vyn
 
     this.el.close.addEventListener("click", ()=> this.hide());
     this.el.addPoint.addEventListener("click", ()=> this._addPointRow());
@@ -3551,7 +3562,7 @@ class ZonesPanel{
     this._resetForm();
     await this._refreshList();
   }
-  hide(){ this.el.root.classList.remove("dp-visible"); }
+  hide(){ this.el.root.classList.remove("dp-visible"); this._clearZoneGuideLine(); }
 
   async _refreshList(){
     this._zonesData = await loadZones();
@@ -3593,9 +3604,15 @@ class ZonesPanel{
     });
   }
 
-  _addPointRow(N="", E=""){
+  _addPointRow(N="", E="", Z=null){
     const row = document.createElement("div");
     row.className = "dp-zone-point-row";
+    // Z (höjd, meter) hör INTE till zonens egen 2D-matchning (den bryr sig
+    // bara om N/E, se pointInPolygon) — den finns bara här för att kunna
+    // rita en vettig 3D-guide (se _updateZoneGuideLine). Sätts av 📍-knappen
+    // (då blir den markerade objektets bounding-box-mittpunkts Z) och är
+    // annars tom, vilket _updateZoneGuideLine tolkar som Z=0.
+    row.dataset.z = (Z!=null && isFinite(Z)) ? String(Z) : "";
     const label = document.createElement("span");
     label.className = "dp-zone-point-label";
     label.textContent = `#${this.el.points.children.length+1}`;
@@ -3605,6 +3622,11 @@ class ZonesPanel{
     const eInput = document.createElement("input");
     eInput.type = "number"; eInput.step = "0.01"; eInput.placeholder = "E"; eInput.value = E;
     eInput.title = "SWEREF99 20 15 — Easting (E), meter";
+    // Ritar om 3D-guiden live så fort man skriver för hand också, inte bara
+    // via 📍-knappen — annars skulle raden hamna i fel läge om man justerar
+    // en pin-hämtad koordinat manuellt efteråt.
+    nInput.addEventListener("input", ()=> this._updateZoneGuideLine());
+    eInput.addEventListener("input", ()=> this._updateZoneGuideLine());
     const pinBtn = document.createElement("button");
     pinBtn.className = "dp-btn dp-zone-point-pin";
     pinBtn.textContent = "📍";
@@ -3619,6 +3641,8 @@ class ZonesPanel{
         // vi byta konventionen.
         nInput.value = center.y.toFixed(2);
         eInput.value = center.x.toFixed(2);
+        row.dataset.z = String(center.z);
+        await this._updateZoneGuideLine();
       }catch(err){
         alert("Kunde inte hämta koordinat: " + (err?.message || err));
       }finally{
@@ -3629,14 +3653,64 @@ class ZonesPanel{
     rmBtn.className = "dp-btn dp-zone-point-remove";
     rmBtn.textContent = "✕";
     rmBtn.title = "Ta bort hörnet";
-    rmBtn.addEventListener("click", ()=>{ row.remove(); this._renumberPoints(); });
+    rmBtn.addEventListener("click", ()=>{ row.remove(); this._renumberPoints(); this._updateZoneGuideLine(); });
     row.append(label, nInput, eInput, pinBtn, rmBtn);
     this.el.points.appendChild(row);
+    this._updateZoneGuideLine();
   }
   _renumberPoints(){
     [...this.el.points.children].forEach((row,i)=>{
       row.querySelector(".dp-zone-point-label").textContent = `#${i+1}`;
     });
+  }
+  // Ritar de linjer som just nu visar zonens hörn i 3D-vyn (Trimble Connects
+  // egen "LineMarkup" via markup.addLineMarkups — samma teknik som
+  // "Lägg till i 3D-vy"-guiden, se DrawingPreviewWidget._updateGuide3d).
+  // Körs varje gång ett hörn läggs till/tas bort/ändras (för hand eller via
+  // 📍), så linjerna alltid speglar det som faktiskt står i formuläret just
+  // nu — precis som mätverktygens live-linje under Kalibrera/Mät avstånd.
+  // Ritar en öppen linje mellan hörn #1..#N, och sluter slingan (sista →
+  // första) så fort det finns minst tre giltiga hörn i följd.
+  async _updateZoneGuideLine(){
+    await this._clearZoneGuideLine();
+    if(!tcApi?.markup?.addLineMarkups) return;
+    const rows = [...this.el.points.children];
+    const worldPoints = [];
+    for(const row of rows){
+      const [nInput, eInput] = row.querySelectorAll("input");
+      const N = parseFloat(nInput.value), E = parseFloat(eInput.value);
+      if(!isFinite(N) || !isFinite(E)) break; // sluta vid första ofullständigt ifyllda hörnet
+      const z = parseFloat(row.dataset.z) || 0;
+      // Samma X=E/Y=N-antagande som 📍-knappen och resten av zonfunktionen.
+      worldPoints.push({ x:E, y:N, z });
+    }
+    if(worldPoints.length < 2) return;
+    try{
+      const toMm = p => ({ positionX:p.x*1000, positionY:p.y*1000, positionZ:p.z*1000 });
+      // Eget ID-intervall (skiljt från plattguidens, se _updateGuide3d) så de
+      // två live-guiderna aldrig råkar skriva över varandras linjer om båda
+      // panelerna är öppna nära samma millisekund.
+      const baseId = 2_000_000_000_000_000 + Date.now();
+      const color = { r:0, g:200, b:255, a:255 };
+      const closeLoop = worldPoints.length >= 3;
+      const segCount = closeLoop ? worldPoints.length : worldPoints.length - 1;
+      const lineMarkups = [];
+      for(let i=0;i<segCount;i++){
+        const a = worldPoints[i], b = worldPoints[(i+1) % worldPoints.length];
+        lineMarkups.push({ id: baseId+i, start: toMm(a), end: toMm(b), color });
+      }
+      const created = await tcApi.markup.addLineMarkups(lineMarkups);
+      this._guideZoneMarkupIds = (Array.isArray(created) && created.length ? created : lineMarkups).map(m => m.id);
+    }catch(err){
+      console.warn("[zoner] kunde inte rita zon-guide i 3D-vyn:", err);
+      this._guideZoneMarkupIds = [];
+    }
+  }
+  async _clearZoneGuideLine(){
+    if(!this._guideZoneMarkupIds?.length || !tcApi?.markup?.removeMarkups){ this._guideZoneMarkupIds=[]; return; }
+    try{ await tcApi.markup.removeMarkups(this._guideZoneMarkupIds); }
+    catch(err){ console.warn("[TC] markup.removeMarkups (zon-guide) misslyckades:", err); }
+    this._guideZoneMarkupIds = [];
   }
   _resetForm(){
     this._editingId = null;
@@ -4310,7 +4384,9 @@ class DrawingPreviewWidget{
       // är meter rakt igenom filen — vi konverterar till mm precis här,
       // vid gränsytan mot markup-API:et, och ingen annanstans.
       const toMm = p => ({ positionX: p.x*1000, positionY: p.y*1000, positionZ: p.z*1000 });
-      const baseId = Date.now();
+      // Eget ID-intervall (skiljt från zon-guidens, se ZonesPanel._updateZoneGuideLine)
+      // så de två live-guiderna aldrig råkar skriva över varandras linjer.
+      const baseId = 1_000_000_000_000_000 + Date.now();
       const color = { r:255, g:170, b:0, a:255 };
       const corners = placement.corners; // 4 hörn, medurs/moturs runt plattan
       const lineMarkups = corners.map((p,i) => ({
@@ -4520,12 +4596,23 @@ class DrawingPreviewWidget{
     await renderAttachment(this.el.canvas, d);
     await this.engine.loadForDrawing();
     this._highlightActiveRow();
-    this._updatePhotoMeta(d);
+    await this._updatePhotoMeta(d);
   }
-  // Visar datum-taget + SWEREF99 20 15 för aktuellt foto, om EXIF-data
-  // hittades (satt av renderRealImage/_cacheEntry i DEL 3/3b). Ritningar
-  // (PDF) har ingen EXIF, så raden döljs för dem.
-  _updatePhotoMeta(item){
+  // Visar datum-taget + SWEREF99 20 15 + ev. zon-taggning ("Område") för
+  // aktuellt foto, om EXIF-data hittades (satt av renderRealImage/
+  // _cacheEntry i DEL 3/3b). Ritningar (PDF) har ingen EXIF, så raden
+  // döljs för dem.
+  //
+  // BUGFIX: auto-taggningen av GPS-koordinatens zon triggades tidigare
+  // (renderRealImage) som "fire-and-forget" (.then() utan await), så den
+  // hann nästan aldrig bli klar innan den här raden ritades upp första
+  // gången ett foto öppnades — man såg alltså koordinaten men ALDRIG
+  // vilken zon den hamnade i, även när taggningen faktiskt gick igenom
+  // strax efteråt i tysthet. Nu körs (och AWAITAS) autoTagZoneForFile
+  // HÄR istället, varje gång fotot visas, och resultatet läses direkt ur
+  // projektindexet så raden alltid visar samma "Område" som den
+  // projektomfattande listan.
+  async _updatePhotoMeta(item){
     const entry = _attachmentCache.get(item.id);
     const exif = entry && entry.exif;
     if(item.kind!=="image" || !exif || (!exif.dateIso && exif.lat==null)){
@@ -4538,9 +4625,16 @@ class DrawingPreviewWidget{
       const dt = new Date(exif.dateIso);
       if(!isNaN(dt)) parts.push("📅 " + dt.toLocaleString("sv-SE", {dateStyle:"medium", timeStyle:"short"}));
     }
+    let area = "";
     if(exif.lat!=null && exif.lon!=null){
       const g = wgs84ToSweref99_20_15(exif.lat, exif.lon);
       parts.push(`📍 SWEREF99 20 15 — N ${g.N}  E ${g.E}`);
+      try{
+        await autoTagZoneForFile(item.id, g);
+        const idx = await loadProjectIndex();
+        area = idx.files[item.id]?.area || "";
+      }catch(err){ console.warn("[zoner] kunde inte läsa/uppdatera zontaggning för foto:", item.id, err); }
+      parts.push(area ? `🏷 Område: ${area}` : "🏷 Ingen zon matchar den här koordinaten ännu");
     }
     this.el.photoMeta.innerHTML = parts.map(p=>`<span>${p}</span>`).join("");
     this.el.photoMeta.classList.toggle("dp-show", parts.length>0);
