@@ -290,7 +290,10 @@
     color:var(--text); padding:5px 6px; font-size:12px; }
   .dp-zone-point-row .dp-zone-point-label{ width:52px; color:var(--text-dim); font-size:11px; }
   .dp-zone-point-row .dp-zone-point-pin{ padding:5px 8px; }
-  .dp-zone-point-row .dp-zone-point-remove{ margin-left:auto; }
+  .dp-zone-point-row .dp-zone-point-up,
+  .dp-zone-point-row .dp-zone-point-down{ padding:5px 8px; margin-left:auto; }
+  .dp-zone-point-row .dp-zone-point-down{ margin-left:0; }
+  .dp-zone-point-row .dp-zone-point-remove{ margin-left:0; }
   #dp-zone-form-actions{ display:flex; gap:8px; flex-wrap:wrap; }
   #dp-zones-footer{ border-top:1px solid var(--border); padding:10px 14px; display:flex; gap:8px;
     align-items:center; flex:0 0 auto; }
@@ -753,6 +756,10 @@ async function handleSelectionChanged(eventArg){
       console.warn("[TC] convertToObjectIds misslyckades:", convErr);
     }
 
+    // Ett riktigt objekt har nu valts i modellen — en ev. kvarglömd
+    // foto-markör (se GlobalIndexPanel._showStandaloneMarker) hör inte
+    // hemma här längre.
+    globalIndexPanel?._clearStandaloneMarker();
     currentSelection = { modelId, runtimeId, guid, name };
     await openPopupForSelection(currentSelection);
   }catch(err){
@@ -1256,7 +1263,7 @@ async function tcUploadStandalonePhoto(file){
   const filename = file.name || `foto-${Date.now()}.jpg`;
   const { fileId, versionId } = await uploadFileToFolder(folderId, filename, file);
 
-  const sweref = (exif?.lat!=null && exif?.lon!=null) ? wgs84ToSweref99_20_15(exif.lat, exif.lon) : null;
+  const sweref = (exif?.lat!=null && exif?.lon!=null) ? wgs84ToSweref99_20_15(exif.lat, exif.lon, exif.alt) : null;
   const rec = await recordStandaloneInIndex({ id: fileId, name: filename, versionId }, sweref, exif?.dateIso || null);
   if(sweref){
     try{ await autoTagZoneForFile(fileId, sweref); }
@@ -1319,7 +1326,7 @@ async function tcLinkExistingFileStandalone(file){
     console.warn("[foto] kunde inte hämta/läsa EXIF ur befintlig fil:", file.name, err);
   }
 
-  const sweref = (exif?.lat!=null && exif?.lon!=null) ? wgs84ToSweref99_20_15(exif.lat, exif.lon) : null;
+  const sweref = (exif?.lat!=null && exif?.lon!=null) ? wgs84ToSweref99_20_15(exif.lat, exif.lon, exif.alt) : null;
   const capturedDate = exif?.dateIso || (file.createdOn ? new Date(file.createdOn).toISOString() : null);
   const rec = await recordStandaloneInIndex({ id: file.id, name: file.name, versionId: file.versionId }, sweref, capturedDate);
   if(sweref){
@@ -2621,7 +2628,7 @@ async function retagAllPhotosWithZones(onProgress){
         const blob = await downloadAttachmentBlob(fileId, rec.versionId);
         const exif = blob ? parseExifDateAndGps(await blob.arrayBuffer()) : null;
         if(exif?.lat!=null && exif?.lon!=null){
-          sweref = wgs84ToSweref99_20_15(exif.lat, exif.lon);
+          sweref = wgs84ToSweref99_20_15(exif.lat, exif.lon, exif.alt);
           await setIndexSweref(fileId, sweref);
         }else{
           noGps++;
@@ -3076,7 +3083,7 @@ async function renderRealImage(canvas, imgItem){
       // upp. Tidigare kördes den fire-and-forget härifrån och hann nästan
       // aldrig bli klar i tid, vilket gjorde att taggningen aldrig syntes.
       if(entry.exif?.lat!=null && entry.exif?.lon!=null){
-        const sweref = wgs84ToSweref99_20_15(entry.exif.lat, entry.exif.lon);
+        const sweref = wgs84ToSweref99_20_15(entry.exif.lat, entry.exif.lon, entry.exif.alt);
         setIndexSweref(imgItem.id, sweref);
       }
     }
@@ -3175,7 +3182,7 @@ function parseExifDateAndGps(arrayBuffer){
     return out;
   }
 
-  let dateIso = null, lat = null, lon = null;
+  let dateIso = null, lat = null, lon = null, alt = null;
   try{
     const ifd0 = readIfd(tiffStart+ifd0Offset);
     let dateTaken = null;
@@ -3198,19 +3205,41 @@ function parseExifDateAndGps(arrayBuffer){
         if(gps[0x0001] && /S/i.test(entryAscii(gps[0x0001]))) lat = -lat;
         if(gps[0x0003] && /W/i.test(entryAscii(gps[0x0003]))) lon = -lon;
       }
+      // GPSAltitude (0x0006, RATIONAL) + GPSAltitudeRef (0x0005, BYTE — 0 =
+      // över havet, 1 = under). Det här är telefonens egen GPS/barometer-
+      // höjd, INTE automatiskt samma sak som modellens höjdsystem (t.ex.
+      // RH2000) — se kommentaren i wgs84ToSweref99_20_15 om hur/om den
+      // används rakt av.
+      if(gps[0x0006]){
+        const altOff = tiffStart+get32(gps[0x0006].valueOffsetField);
+        alt = getRational(altOff);
+        if(gps[0x0005] && view.getUint8(gps[0x0005].valueOffsetField) === 1) alt = -alt;
+      }
     }
   }catch(err){
     console.warn("[exif] fel vid tolkning av EXIF-data:", err);
     return null;
   }
   if(!dateIso && lat===null) return null;
-  return { dateIso, lat, lon };
+  return { dateIso, lat, lon, alt };
 }
 
 /* Krügers formler (Gauss konform projektion), GRS80, parametrar för
    SWEREF99 20 15 / EPSG:3016. Returnerar heltalsmeter enligt svensk
-   konvention (Northing/Easting, N före E). */
-function wgs84ToSweref99_20_15(latDeg, lonDeg){
+   konvention (Northing/Easting, N före E).
+
+   altMeters (valfri, tredje parametern) är fotots EXIF GPS-altitud (höjd
+   över havet enligt telefonens GPS/barometer) och läggs i så fall med rakt
+   av som Z i det returnerade objektet — UTAN någon omräkning mot RH2000
+   eller annat lokalt höjdsystem. Det finns ingen allmän, garanterat korrekt
+   formel för en sådan omräkning utan en riktig geoidmodell för orten.
+   Användaren har själv jämfört några fotons EXIF-altitud mot RH2000 i det
+   aktuella projektet (2026-09-14) och bedömt att den stämmer tillräckligt
+   bra rakt av, så det är därför det görs så här. Visar det sig slira i
+   praktiken (telefon-GPS-altitud kan vara osäker med flera meter, och två
+   olika höjdsystem råkar bara sällan sammanfalla exakt) är nästa steg en
+   manuell kalibrerings-offset istället för att lita på råvärdet. */
+function wgs84ToSweref99_20_15(latDeg, lonDeg, altMeters){
   const a = 6378137.0;
   const f = 1/298.257222101;
   const centralMeridian = 20.25; // 20°15'
@@ -3247,7 +3276,9 @@ function wgs84ToSweref99_20_15(latDeg, lonDeg){
       + beta3*Math.cos(6*xiPrim)*Math.sinh(6*etaPrim)
       + beta4*Math.cos(8*xiPrim)*Math.sinh(8*etaPrim)) * k0 + FE;
 
-  return { N: Math.round(N), E: Math.round(E) };
+  const out = { N: Math.round(N), E: Math.round(E) };
+  if(typeof altMeters === "number" && isFinite(altMeters)) out.Z = Math.round(altMeters*10)/10;
+  return out;
 }
 
 /* =====================================================================
@@ -3829,18 +3860,53 @@ class ZonesPanel{
         pinBtn.disabled = false;
       }
     });
+    // Upp/ner-pilar för att ändra ORDNINGEN på hörnen utan att skriva om
+    // N/E — svar på att man annars bara kan rätta en felplacerad koordinat
+    // genom att skriva över siffrorna för hand. Ordningen spelar roll för
+    // hur polygonen ritas upp (hörn #1→#2→#3→… →#1 igen), så ett hörn på
+    // fel PLATS i listan (även med rätt siffror) kan göra polygonen
+    // självkorsande.
+    const upBtn = document.createElement("button");
+    upBtn.className = "dp-btn dp-zone-point-up";
+    upBtn.textContent = "▲";
+    upBtn.title = "Flytta hörnet uppåt (tidigare i ordningen)";
+    upBtn.addEventListener("click", ()=> this._movePointRow(row, -1));
+    const downBtn = document.createElement("button");
+    downBtn.className = "dp-btn dp-zone-point-down";
+    downBtn.textContent = "▼";
+    downBtn.title = "Flytta hörnet nedåt (senare i ordningen)";
+    downBtn.addEventListener("click", ()=> this._movePointRow(row, 1));
     const rmBtn = document.createElement("button");
     rmBtn.className = "dp-btn dp-zone-point-remove";
     rmBtn.textContent = "✕";
     rmBtn.title = "Ta bort hörnet";
     rmBtn.addEventListener("click", ()=>{ row.remove(); this._renumberPoints(); this._updateZoneGuideLine(); });
-    row.append(label, nInput, eInput, pinBtn, rmBtn);
+    row.append(label, nInput, eInput, pinBtn, upBtn, downBtn, rmBtn);
     this.el.points.appendChild(row);
+    this._renumberPoints();
+    this._updateZoneGuideLine();
+  }
+  // Byter plats på en hörnrad och dess granne (dir -1 = uppåt/tidigare,
+  // +1 = nedåt/senare) genom att flytta DOM-noderna — enklast och säkrast
+  // sätt att swap:a två rader utan att behöva läsa av och skriva tillbaka
+  // varje inputs värde för hand.
+  _movePointRow(row, dir){
+    if(dir<0 && row.previousElementSibling){
+      row.parentNode.insertBefore(row, row.previousElementSibling);
+    } else if(dir>0 && row.nextElementSibling){
+      row.parentNode.insertBefore(row.nextElementSibling, row);
+    } else {
+      return;
+    }
+    this._renumberPoints();
     this._updateZoneGuideLine();
   }
   _renumberPoints(){
-    [...this.el.points.children].forEach((row,i)=>{
+    const rows = [...this.el.points.children];
+    rows.forEach((row,i)=>{
       row.querySelector(".dp-zone-point-label").textContent = `#${i+1}`;
+      row.querySelector(".dp-zone-point-up").disabled = i===0;
+      row.querySelector(".dp-zone-point-down").disabled = i===rows.length-1;
     });
   }
   // Ritar de linjer som just nu visar zonens hörn i 3D-vyn (Trimble Connects
@@ -4010,6 +4076,7 @@ class GlobalIndexPanel{
       browseStandaloneBtn: document.getElementById("dp-global-browse-standalone-btn"),
     };
     this._idx = null; // senast inlästa projektindex (cachead referens, se loadProjectIndex)
+    this._standaloneMarkerIds = []; // id:n för den native 3D-markör (korsformad linje-guide) som just nu visar var senast öppnade fristående foto är taget, se _showStandaloneMarker
     this._sortField = "name";
     this._sortDir = "asc";
     this.el.areaFilter.addEventListener("change", ()=> this._renderRows());
@@ -4230,7 +4297,7 @@ class GlobalIndexPanel{
       const objName = document.createElement("span");
       objName.className = "dp-attach-objname";
       objName.textContent = rec.standalone
-        ? (rec.sweref ? `fristående foto — N ${rec.sweref.N} E ${rec.sweref.E}` : "fristående foto — ingen GPS-koordinat")
+        ? (rec.sweref ? `fristående foto — N ${rec.sweref.N} E ${rec.sweref.E}${typeof rec.sweref.Z==="number" ? " Z "+rec.sweref.Z : ""}` : "fristående foto — ingen GPS-koordinat")
         : (rec.objectName ? `objekt: ${rec.objectName}` : "");
       nameCell.append(nameRow, objName);
       nameCell.addEventListener("click", ()=> this._openFile(fileId, rec));
@@ -4351,6 +4418,9 @@ class GlobalIndexPanel{
       await this._openStandalonePhoto(fileId, rec);
       return;
     }
+    // Ett riktigt objekt öppnas nu — en ev. kvarglömd foto-markör (se
+    // _showStandaloneMarker) hör inte hemma här längre.
+    this._clearStandaloneMarker();
     if(!tcApi?.viewer?.setSelection){
       alert("Kan inte markera objekt — viewer.setSelection saknas i api-ytan.");
       return;
@@ -4369,34 +4439,42 @@ class GlobalIndexPanel{
   }
 
   // Klick på ett fristående (okopplat) foto: inget objekt att markera, så
-  // istället flyttas 3D-kameran direkt till fotots SWEREF-koordinat (samma
-  // markup.addLineMarkups-grannteknik hade dugt för en punktmarkör också,
-  // men viewer.setCamera är den riktiga "gå hit i modellen"-funktionen —
-  // bekräftad mot Trimbles officiella API-dokumentation). Visar sedan
-  // fotot i den vanliga bildvyn också, precis som ett klick på en
-  // objekt-kopplad fil gör.
+  // istället flyttas 3D-kameran direkt till fotots SWEREF-koordinat, OCH en
+  // native 3D-markör (kors + liten diamant, ritad med samma
+  // markup.addLineMarkups-teknik som plattguiden/zon-guiden — det finns
+  // ingen bekräftad "punkt-/molnmarkup" i Trimbles API-yta, så en tydlig
+  // linje-baserad markör användes istället, se _showStandaloneMarker) sätts
+  // ut på exakt den koordinaten så platsen syns tydligt i modellen även
+  // efter att kameran stannat. Visar sedan fotot i den vanliga bildvyn
+  // också, precis som ett klick på en objekt-kopplad fil gör.
   async _openStandalonePhoto(fileId, rec){
     if(!rec.sweref){
       alert(`"${rec.name}" har ingen sparad GPS-koordinat (hittades inte i bildens EXIF-data vid uppladdning), så det går inte att zooma till den i 3D-vyn. Du kan fortfarande öppna och titta på fotot.`);
-    } else if(!tcApi?.viewer?.setCamera){
-      alert("Kan inte flytta kameran — viewer.setCamera saknas i api-ytan.");
+      this._clearStandaloneMarker();
     } else {
       // Antagande: modellens X-axel = Easting (E), Y-axel = Northing (N),
       // Z-axel upp — samma konvention som resten av zonfunktionen använder
       // (se ZonesPanel/📍-knappen). INTE bekräftat för just det här
-      // projektet.
-      const target = { x: rec.sweref.E, y: rec.sweref.N, z: 0 };
-      const CAM_OFFSET = 15; // meter — godtyckligt men rimligt avstånd för att se omgivningen
-      const position = { x: target.x, y: target.y - CAM_OFFSET, z: target.z + CAM_OFFSET };
-      try{
-        await tcApi.viewer.setCamera(
-          { position, lookAt: target, upDirection: { x:0, y:0, z:1 } },
-          { animationTime: 800 }
-        );
-      }catch(err){
-        console.warn("[TC] kunde inte flytta kameran till fotots koordinat:", err);
-        alert("Kunde inte flytta kameran till fotots koordinat: " + describeError(err));
+      // projektet. Z tas från fotots EXIF GPS-altitud (rec.sweref.Z, se
+      // wgs84ToSweref99_20_15) när den finns, annars 0 (marknivå-antagande,
+      // t.ex. om fotot saknar altitud i EXIF).
+      const target = { x: rec.sweref.E, y: rec.sweref.N, z: typeof rec.sweref.Z === "number" ? rec.sweref.Z : 0 };
+      if(!tcApi?.viewer?.setCamera){
+        alert("Kan inte flytta kameran — viewer.setCamera saknas i api-ytan.");
+      } else {
+        const CAM_OFFSET = 15; // meter — godtyckligt men rimligt avstånd för att se omgivningen
+        const position = { x: target.x, y: target.y - CAM_OFFSET, z: target.z + CAM_OFFSET };
+        try{
+          await tcApi.viewer.setCamera(
+            { position, lookAt: target, upDirection: { x:0, y:0, z:1 } },
+            { animationTime: 800 }
+          );
+        }catch(err){
+          console.warn("[TC] kunde inte flytta kameran till fotots koordinat:", err);
+          alert("Kunde inte flytta kameran till fotots koordinat: " + describeError(err));
+        }
       }
+      await this._showStandaloneMarker(target);
     }
     // Rensa ev. gammal objekt-markering — den här vyn hör inte till något
     // markerat objekt, så "Lägg till fler bilagor"-flödena i widgeten ska
@@ -4407,6 +4485,48 @@ class GlobalIndexPanel{
       attachments: [{ kind: "image", id: fileId, versionId: rec.versionId, name: rec.name,
         capturedAt: rec.capturedDate ? new Date(rec.capturedDate).toLocaleDateString("sv-SE") : "–" }],
     });
+  }
+
+  // Ritar en liten native 3D-markör (ett kors genom punkten i alla tre
+  // axlarna + en horisontell diamant strax ovanför) centrerad exakt på
+  // target (world-koordinater i METER — konverteras till mm vid
+  // markup-anropet, se toMm). Egen ID-rymd (3_000_...) skild från
+  // plattguidens (1_000_...) och zon-guidens (2_000_...) så de tre
+  // live-guiderna aldrig kan råka skriva över varandra.
+  async _showStandaloneMarker(target){
+    await this._clearStandaloneMarker();
+    if(!tcApi?.markup?.addLineMarkups) return;
+    try{
+      const toMm = p => ({ positionX: p.x*1000, positionY: p.y*1000, positionZ: p.z*1000 });
+      const { x, y, z } = target;
+      const R = 1.2; // meter — halva korsets armlängd, valt för att synas tydligt utan att bli orimligt stort i vyn
+      const color = { r:255, g:40, b:40, a:255 };
+      const seg = (a, b) => ({ start: toMm(a), end: toMm(b), color });
+      const diamondZ = z + R*0.6;
+      const segments = [
+        seg({x:x-R,y,z},{x:x+R,y,z}),
+        seg({x,y:y-R,z},{x,y:y+R,z}),
+        seg({x,y,z:z-R},{x,y,z:z+R*2}), // pekar högre upp än ner, som en liten flaggstång
+        seg({x:x-R,y,z:diamondZ},{x,y:y-R,z:diamondZ}),
+        seg({x,y:y-R,z:diamondZ},{x:x+R,y,z:diamondZ}),
+        seg({x:x+R,y,z:diamondZ},{x,y:y+R,z:diamondZ}),
+        seg({x,y:y+R,z:diamondZ},{x:x-R,y,z:diamondZ}),
+      ];
+      const baseId = 3_000_000_000_000_000 + Date.now();
+      const lineMarkups = segments.map((s,i)=>({ id: baseId+i, ...s }));
+      const created = await tcApi.markup.addLineMarkups(lineMarkups);
+      this._standaloneMarkerIds = (Array.isArray(created) && created.length ? created : lineMarkups).map(m=>m.id);
+    }catch(err){
+      console.warn("[TC] kunde inte rita markör för fristående foto:", err);
+      this._standaloneMarkerIds = [];
+    }
+  }
+  async _clearStandaloneMarker(){
+    if(!this._standaloneMarkerIds?.length || !tcApi?.markup?.removeMarkups){ this._standaloneMarkerIds=[]; return; }
+    const ids = this._standaloneMarkerIds;
+    this._standaloneMarkerIds = [];
+    try{ await tcApi.markup.removeMarkups(ids); }
+    catch(err){ console.warn("[TC] markup.removeMarkups (fristående foto-markör) misslyckades:", err); }
   }
 }
 
@@ -4537,6 +4657,7 @@ class DrawingPreviewWidget{
     this.currentObj = null;
     this.el.attachList.innerHTML = "";
     this._close3dPanel?.();
+    globalIndexPanel?._clearStandaloneMarker();
     globalIndexPanel?.show();
   }
 
@@ -4933,8 +5054,9 @@ class DrawingPreviewWidget{
     }
     let area = "";
     if(exif.lat!=null && exif.lon!=null){
-      const g = wgs84ToSweref99_20_15(exif.lat, exif.lon);
-      parts.push(`📍 SWEREF99 20 15 — N ${g.N}  E ${g.E}`);
+      const g = wgs84ToSweref99_20_15(exif.lat, exif.lon, exif.alt);
+      const zPart = typeof g.Z === "number" ? `  Z ${g.Z} m` : "";
+      parts.push(`📍 SWEREF99 20 15 — N ${g.N}  E ${g.E}${zPart}`);
       try{
         await autoTagZoneForFile(item.id, g);
         const idx = await loadProjectIndex();
