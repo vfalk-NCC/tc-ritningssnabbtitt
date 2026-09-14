@@ -506,6 +506,11 @@
       skriva över taggningen för hand i den projektomfattande listan efteråt — då rör zonerna inte den filen igen
       förrän du själv tömmer fältet där.
       <br><br>
+      "Tagga om alla foton" nedan kontrollerar ALLA bildfiler i projektet — inte bara de du redan öppnat i visaren.
+      Foton som aldrig öppnats saknar koordinat tills dess, så knappen laddar i så fall ner dem och läser GPS-datan ur
+      bilden precis som när man öppnar ett foto, bara utan att visa själva bilden. Det kan ta en liten stund om
+      projektet har många foton.
+      <br><br>
       Du fyller i varje hörn som N/E-siffror, eller markerar ett objekt i 3D-vyn och trycker på 📍 vid hörnet så
       hämtas koordinaten automatiskt (mittpunkten av objektets bounding box). Trimbles API kan inte läsa av var man
       klickar i själva 3D-modellen — bara bounding boxen för ett redan markerat objekt — så 📍-knappen ger dig
@@ -2443,22 +2448,52 @@ async function autoTagZoneForFile(fileId, sweref){
   }
 }
 
-/* Går igenom HELA projektindexet och kör om zonmatchningen för varje fil
-   som redan har en sparad SWEREF-koordinat — används av "Tagga om alla
-   foton"-knappen i zonpanelen (t.ex. efter att en zon lagts till/ändrats),
-   så att redan uppladdade foton inte förlitar sig på att öppnas igen. */
+/* Går igenom HELA projektindexet och kör om zonmatchningen — används av
+   "Tagga om alla foton"-knappen i zonpanelen (t.ex. efter att en zon lagts
+   till/ändrats).
+
+   BUGFIX: kollade tidigare BARA filer som redan hade en sparad SWEREF-
+   koordinat — och den sattes bara när man faktiskt bläddrat fram till
+   fotot i visaren minst en gång (se renderRealImage/_updatePhotoMeta).
+   Ett nyuppladdat foto man aldrig öppnat kunde alltså ligga mitt i en zon
+   utan att NÅGONSIN bli taggat, hur många gånger man än tryckte "Tagga om
+   alla foton" — knappen visade bara att den kollat de foton som redan
+   hade koordinat, inte att den hoppat över resten helt tyst. Nu går den
+   igenom ALLA bildfiler i projektindexet (kind==="image") och laddar ner
+   + läser EXIF-GPS här också för de som saknar sweref sedan innan, precis
+   som renderRealImage gör när man öppnar ett foto — bara utan att rita
+   upp det i visaren. */
 async function retagAllPhotosWithZones(onProgress){
   const idx = await loadProjectIndex();
-  const entries = Object.entries(idx.files||{}).filter(([,r]) => r.sweref);
-  let changed = 0;
+  const entries = Object.entries(idx.files||{}).filter(([,r]) => r.kind==="image");
+  let changed = 0, withCoord = 0, noGps = 0, downloadErrors = 0;
   for(let i=0;i<entries.length;i++){
     const [fileId, rec] = entries[i];
-    const before = rec.area;
-    await autoTagZoneForFile(fileId, rec.sweref);
-    if(rec.area !== before) changed++;
     if(onProgress) onProgress(i+1, entries.length);
+    let sweref = rec.sweref;
+    if(!sweref){
+      try{
+        const blob = await downloadAttachmentBlob(fileId, rec.versionId);
+        const exif = blob ? parseExifDateAndGps(await blob.arrayBuffer()) : null;
+        if(exif?.lat!=null && exif?.lon!=null){
+          sweref = wgs84ToSweref99_20_15(exif.lat, exif.lon);
+          await setIndexSweref(fileId, sweref);
+        }else{
+          noGps++;
+          continue;
+        }
+      }catch(err){
+        console.warn("[zoner] kunde inte hämta/läsa EXIF vid omtaggning:", fileId, err);
+        downloadErrors++;
+        continue;
+      }
+    }
+    withCoord++;
+    const before = rec.area;
+    await autoTagZoneForFile(fileId, sweref);
+    if(rec.area !== before) changed++;
   }
-  return { checked: entries.length, changed };
+  return { checked: withCoord, changed, totalImages: entries.length, noGps, downloadErrors };
 }
 
 /* =====================================================================
@@ -3783,10 +3818,15 @@ class ZonesPanel{
     this.el.retag.textContent = "Taggar om…";
     this.el.retagStatus.textContent = "";
     try{
-      const { checked, changed } = await retagAllPhotosWithZones((done,total)=>{
+      const { checked, changed, totalImages, noGps, downloadErrors } = await retagAllPhotosWithZones((done,total)=>{
         this.el.retag.textContent = `Taggar om… (${done}/${total})`;
       });
-      this.el.retagStatus.textContent = `Klart — ${checked} foton med koordinat kontrollerade, ${changed} fick ett nytt/ändrat område.`;
+      let msg = `Klart — ${checked} av ${totalImages} foton hade/fick en koordinat och kontrollerades, ${changed} fick ett nytt/ändrat område.`;
+      const extra = [];
+      if(noGps) extra.push(`${noGps} st saknar GPS-data i bilden`);
+      if(downloadErrors) extra.push(`${downloadErrors} st gick inte att hämta (se konsolen, F12)`);
+      if(extra.length) msg += ` (${extra.join(", ")}.)`;
+      this.el.retagStatus.textContent = msg;
       if(globalIndexPanel) globalIndexPanel.refresh();
     }catch(err){
       console.error("[zoner] omtaggning misslyckades:", err);
