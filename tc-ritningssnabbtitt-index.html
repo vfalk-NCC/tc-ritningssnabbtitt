@@ -132,6 +132,12 @@
   #dp-3d-panel.dp-show{ display:flex; }
   #dp-3d-panel h4{ margin:0; font-size:11px; font-weight:700; color:var(--text); }
   .dp-3d-row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  /* Snabbvisning i 3D (PDF-linjer direkt i vyn via markup.addLineMarkups) */
+  #dp-3d-quick-box{ border:1px solid var(--accent); border-radius:6px; padding:8px 10px; display:flex; flex-direction:column; gap:6px;
+    background:rgba(61,155,255,0.08); }
+  #dp-3d-quick-box .dp-3d-quick-title{ font-weight:700; color:var(--text); }
+  #dp-3d-quick-status{ color:var(--text-dim); white-space:normal; }
+  #dp-3d-quick-color{ width:34px; height:22px; padding:0; border:1px solid var(--border); background:none; }
   .dp-3d-row label{ display:flex; align-items:center; gap:5px; color:var(--text-dim); white-space:nowrap; }
   .dp-3d-row input[type="number"]{ width:64px; background:#1c1d20; border:1px solid var(--border);
     color:var(--text); font-size:11px; border-radius:4px; padding:3px 5px; font-family:inherit; }
@@ -480,6 +486,30 @@
            för v1:s enda confirm()-dialog. Se DEL 1e i JS-delen. -->
       <div id="dp-3d-panel">
         <h4>🧊 Lägg till i 3D-vy (experimentellt)</h4>
+        <!-- Snabbvisning: ritningens riktiga linjer ritas direkt i 3D-vyn med
+             markup.addLineMarkups (ingen uppladdning/konvertering). Följer
+             ankare/offset/rotation/lutning/skala nedan. Se DEL 1f i JS-delen. -->
+        <div id="dp-3d-quick-box">
+          <div class="dp-3d-quick-title">⚡ Snabbvisning i 3D — ritningens linjer direkt i vyn</div>
+          <div class="dp-3d-row">
+            <button class="dp-btn dp-btn-primary" id="dp-3d-quick">⚡ Visa ritningen i 3D</button>
+            <button class="dp-btn" id="dp-3d-quick-clear">Ta bort</button>
+            <label><input type="checkbox" id="dp-3d-quick-live" checked> Följ reglagen</label>
+          </div>
+          <div class="dp-3d-row">
+            <label>Detalj
+              <select id="dp-3d-quick-detail">
+                <option value="5000">Låg (snabb)</option>
+                <option value="15000" selected>Normal</option>
+                <option value="40000">Hög</option>
+              </select>
+            </label>
+            <label>Färg <input type="color" id="dp-3d-quick-color" value="#d81b60"></label>
+            <label title="Används bara om ritningen inte är kalibrerad (verktyget Kalibrera)">Skala 1:
+              <input type="number" id="dp-3d-quick-scale" value="100" min="1" step="1"></label>
+          </div>
+          <div id="dp-3d-quick-status">Kräver en PDF utskriven från CAD (vektor-PDF), inte en skannad ritning. Linjerna försvinner när 3D-vyn laddas om.</div>
+        </div>
         <div class="dp-3d-row" style="color:var(--text-dim);">
           Ingen klickbar punktplacering här (Trimbles API kan inte läsa av var man klickar i själva 3D-modellen) —
           ankaret väljs istället nedan, och reglagen finjusterar därifrån.
@@ -2172,6 +2202,51 @@ function extractPdfVectors(opList, viewBox, OPS){
     return segs;
   }
 
+  /* pdf.js 3.x-formatet (den version appen laddar från CDN, 3.11.174):
+     args = [ [OPS-koder], [platt koordinatlista], minMax ] med koderna
+     OPS.moveTo/lineTo/curveTo/curveTo2/curveTo3/closePath/rectangle -
+     INTE DrawOPS-formatet ovan (som är nyare pdf.js). Utan den här grenen
+     hittades noll linjer (verifierat 2026-09-26 mot pdf.js 3.11.174). */
+  function flattenV3PathToSegments(ops, coords, ctmAtDraw){
+    const segs = [];
+    let cx=0, cy=0, sx=0, sy=0, j=0;
+    const line = (x1,y1,x2,y2) => {
+      const [dx1,dy1] = apply(ctmAtDraw, x1,y1), [dx2,dy2] = apply(ctmAtDraw, x2,y2);
+      if(isFinite(dx1)&&isFinite(dy1)&&isFinite(dx2)&&isFinite(dy2)) segs.push({x1:dx1,y1:dy1,x2:dx2,y2:dy2});
+    };
+    const cubic = (x0,y0,x1,y1,x2,y2,x3,y3) => {
+      let px=x0, py=y0;
+      for(let s=1; s<=8; s++){
+        const t=s/8, mt=1-t;
+        const bx = mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3;
+        const by = mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3;
+        line(px,py,bx,by); px=bx; py=by;
+      }
+    };
+    for(const op of ops){
+      if(op===OPS.moveTo){ cx=coords[j++]; cy=coords[j++]; sx=cx; sy=cy; }
+      else if(op===OPS.lineTo){ const x=coords[j++], y=coords[j++]; line(cx,cy,x,y); cx=x; cy=y; }
+      else if(op===OPS.curveTo){ const x1=coords[j++],y1=coords[j++],x2=coords[j++],y2=coords[j++],x3=coords[j++],y3=coords[j++]; cubic(cx,cy,x1,y1,x2,y2,x3,y3); cx=x3; cy=y3; }
+      else if(op===OPS.curveTo2){ const x2=coords[j++],y2=coords[j++],x3=coords[j++],y3=coords[j++]; cubic(cx,cy,cx,cy,x2,y2,x3,y3); cx=x3; cy=y3; }
+      else if(op===OPS.curveTo3){ const x1=coords[j++],y1=coords[j++],x3=coords[j++],y3=coords[j++]; cubic(cx,cy,x1,y1,x3,y3,x3,y3); cx=x3; cy=y3; }
+      else if(op===OPS.closePath){ line(cx,cy,sx,sy); cx=sx; cy=sy; }
+      else if(op===OPS.rectangle){
+        const x=coords[j++], y=coords[j++], w=coords[j++], h=coords[j++];
+        line(x,y,x+w,y); line(x+w,y,x+w,y+h); line(x+w,y+h,x,y+h); line(x,y+h,x,y);
+        cx=x; cy=y; sx=x; sy=y;
+      }
+      else break; // okänd kod - behåll det som redan plattats ut
+    }
+    return segs;
+  }
+
+  // En väg blir bara synlig om den följs av en ritoperation (stroke/fill).
+  // Följs den av endPath (t.ex. efter clip/eoClip) är den en osynlig
+  // klippram och ska INTE med - annars kom sidans klippram med som linjer.
+  const PAINT_OPS = new Set([OPS.stroke, OPS.closeStroke, OPS.fill, OPS.eoFill, OPS.fillStroke,
+    OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke].filter(v => v !== undefined));
+  let pendingSegs = [];
+
   for(let idx=0; idx<opList.fnArray.length; idx++){
     const fn = opList.fnArray[idx];
     const args = opList.argsArray[idx];
@@ -2179,6 +2254,13 @@ function extractPdfVectors(opList, viewBox, OPS){
       if(fn === OPS.save){ stack.push({ctm, tm, tlm, fontSize}); }
       else if(fn === OPS.restore){ const s = stack.pop(); if(s){ ctm=s.ctm; tm=s.tm; tlm=s.tlm; fontSize=s.fontSize; } }
       else if(fn === OPS.transform){ ctm = matMul(Array.from(args), ctm); }
+      else if(PAINT_OPS.has(fn)){ lineSegments.push(...pendingSegs); pendingSegs = []; }
+      else if(fn === OPS.endPath){ pendingSegs = []; }
+      else if(fn === OPS.constructPath && Array.isArray(args) && Array.isArray(args[0]) && Array.isArray(args[1])
+              && args[0].length && args[0].every(n => typeof n === "number")){
+        // pdf.js 3.x (se flattenV3PathToSegments). Väntar på ritoperationen.
+        pendingSegs.push(...flattenV3PathToSegments(args[0], args[1], ctm));
+      }
       else if(fn === OPS.constructPath){
         // Observerad form: args = [ fnKodLista, [Float32Array koordinater], bboxLista ]
         // — args[1] är ett 1-element "omslag" vars [0] är själva koordinat-
@@ -2377,6 +2459,116 @@ async function createDxfForAttachment(item, dxfText){
     throw new Error(`Mappen hittades, men själva filöverföringen misslyckades: ${describeError(err)}`);
   }
   return { fileId, versionId, filename };
+}
+
+/* =====================================================================
+   DEL 1f — SNABBVISNING I 3D (PDF-linjer direkt i vyn)
+
+   Trimble Connect kan inte visa en PDF/bild i 3D-vyn, varken via
+   Workspace API (ingen texturkanal utom det stängda TrimBim-formatet)
+   eller som inbyggd funktion. Men en PDF utskriven från CAD består av
+   riktiga linjer, och Workspace API kan rita linjer: markup.addLineMarkups
+   (samma teknik som placeringsguiden och zon-guiden). Snabbvisningen tar
+   därför ut PDF:ens linjer (extractPdfVectors, DEL 1e) och ritar dem på
+   plattans plats (computePlanePlacement), direkt, utan uppladdning eller
+   konvertering. Linjerna är vektorer och därmed skarpa i alla zoomlägen.
+
+   Begränsningar: kräver vektor-PDF (inte skannad), enfärgade linjer,
+   fyllningar och PDF-text (riktig text, inte linjeritad) följer inte med,
+   och markups sparas inte - de försvinner när 3D-vyn laddas om.
+
+   Koordinater: extractPdfVectors ger PDF-sidrymd (punkter, y uppåt, utan
+   sidrotation). Vi går via pdf.js viewport (som inkluderar sidans /Rotate),
+   så att koordinaterna motsvarar ritningen SOM DEN VISAS i panelen:
+   u = x/bredd (vänster→höger), v = 1 - y/höjd (nederkant→överkant).
+   ===================================================================== */
+
+/* Tar ut, förenklar och normaliserar en PDF-sidas linjer till (u,v) i 0..1.
+   Resultatet cachas per bilaga/sida - det är dyrt, placeringen är billig. */
+async function extractQuickLines(item){
+  const { page } = await ensurePdfDocForItem(item);
+  const viewport = page.getViewport({ scale: 1 });
+  const opList = await page.getOperatorList();
+  const { lineSegments } = extractPdfVectors(opList, viewport.viewBox, pdfjsLib.OPS);
+  const W = viewport.width || 1, H = viewport.height || 1;
+  const toUv = (x,y) => { const [vx,vy] = viewport.convertToViewportPoint(x,y); return [vx/W, 1 - vy/H]; };
+
+  // Till (u,v), ta bort nollängder och dubbletter (samma linje ritas ofta
+  // flera gånger i CAD-PDF:er, t.ex. överlappande lager).
+  const seen = new Set();
+  const segs = [];
+  const q = n => Math.round(n*20000);
+  for(const s of lineSegments){
+    let [u1,v1] = toUv(s.x1,s.y1), [u2,v2] = toUv(s.x2,s.y2);
+    if(![u1,v1,u2,v2].every(isFinite)) continue;
+    if(Math.hypot(u2-u1, v2-v1) < 1e-6) continue;
+    if(u2<u1 || (u2===u1 && v2<v1)){ [u1,v1,u2,v2] = [u2,v2,u1,v1]; }
+    const key = q(u1)+","+q(v1)+","+q(u2)+","+q(v2);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    segs.push([u1,v1,u2,v2]);
+  }
+  const merged = mergeCollinearSegments(segs);
+  return { segs: merged, rawCount: lineSegments.length, pageW: W, pageH: H };
+}
+
+/* Slår ihop segment som ligger i rad och delar ändpunkt (t.ex. streckade
+   eller uppstyckade linjer, flattade kurvor med nästan rak form). Varje
+   markup kostar prestanda i Trimble, så färre och längre linjer är bättre. */
+function mergeCollinearSegments(segs){
+  const key = (u,v) => Math.round(u*20000)+","+Math.round(v*20000);
+  const byEnd = new Map();
+  segs.forEach((s,i) => {
+    for(const k of [key(s[0],s[1]), key(s[2],s[3])]){
+      if(!byEnd.has(k)) byEnd.set(k, []);
+      byEnd.get(k).push(i);
+    }
+  });
+  const used = new Uint8Array(segs.length);
+  const dir = s => { const dx=s[2]-s[0], dy=s[3]-s[1], l=Math.hypot(dx,dy)||1; return [dx/l, dy/l]; };
+  const out = [];
+  for(let i=0;i<segs.length;i++){
+    if(used[i]) continue;
+    used[i] = 1;
+    let [u1,v1,u2,v2] = segs[i];
+    const d = dir(segs[i]);
+    // Förläng åt båda håll så länge en oanvänd, parallell granne delar ändpunkten.
+    for(const end of [0,1]){
+      for(let guard=0; guard<10000; guard++){
+        const pu = end ? u2 : u1, pv = end ? v2 : v1;
+        const cand = (byEnd.get(key(pu,pv))||[]).find(j => {
+          if(used[j]) return false;
+          const e = dir(segs[j]);
+          return Math.abs(d[0]*e[1] - d[1]*e[0]) < 1e-3;   // parallell
+        });
+        if(cand===undefined) break;
+        used[cand] = 1;
+        const c = segs[cand];
+        const far = key(c[0],c[1])===key(pu,pv) ? [c[2],c[3]] : [c[0],c[1]];
+        if(end){ u2=far[0]; v2=far[1]; } else { u1=far[0]; v1=far[1]; }
+      }
+    }
+    out.push([u1,v1,u2,v2]);
+  }
+  return out;
+}
+
+/* Väljer ut högst maxLines linjer (de längsta först - de bär ritningens
+   struktur; korta är ofta text/skraffering) och räknar om dem till
+   världskoordinater (meter) enligt placeringen. */
+function placeQuickLines(segs, placement, widthM, heightM, maxLines){
+  let chosen = segs;
+  if(segs.length > maxLines){
+    chosen = segs
+      .map(s => [s, (s[2]-s[0])*(s[2]-s[0])*widthM*widthM + (s[3]-s[1])*(s[3]-s[1])*heightM*heightM])
+      .sort((a,b) => b[1]-a[1])
+      .slice(0, maxLines)
+      .map(x => x[0]);
+  }
+  const { origin, normal:N, refDir:X } = placement;
+  const Y = vCross(N, X);
+  const world = (u,v) => vAdd(origin, vAdd(vScale(X,(u-0.5)*widthM), vScale(Y,(v-0.5)*heightM)));
+  return chosen.map(s => [world(s[0],s[1]), world(s[2],s[3])]);
 }
 
 /* Enkel mappbläddrare som popup-panel. onPick(file) anropas när användaren
@@ -5274,17 +5466,25 @@ class DrawingPreviewWidget{
     const item = this._currentItem();
     if(!item || !this._3dAnchors) return null;
     const { anchorMode, offset, rotationDeg, tiltDeg, extraScale } = this._read3dInputs();
-    let size;
+    let size, fallback = false;
     try{
       size = computeAttachmentPlaneSize(this.engine.scale, this.el.canvas.width, this.el.canvas.height, extraScale);
     }catch(err){
-      this._setNote3d(err.message);
-      return null;
+      // Inte kalibrerad: för PDF:er räcker pappersformatet + ritningsskalan
+      // (t.ex. 1:100) för guiden och snabbvisningen. Uppladdning/nedladdning
+      // kräver fortsatt kalibrering (se `fallback` i _download3d/_upload3d).
+      size = await this._quickFallbackSize(item, extraScale);
+      if(!size){
+        this._setNote3d(err.message);
+        return null;
+      }
+      fallback = true;
     }
     const anchor = this._3dAnchors[anchorMode] || this._3dAnchors.center;
     const placement = computePlanePlacement({ anchor, offset, rotationDeg, tiltDeg, widthM:size.widthM, heightM:size.heightM });
-    this._last3d = { item, widthM:size.widthM, heightM:size.heightM, placement };
+    this._last3d = { item, widthM:size.widthM, heightM:size.heightM, placement, fallback };
     if(updateGuide && this.el.guide3d.checked) await this._updateGuide3d(placement);
+    if(this._quickShown && this.el.quickLive3d.checked) this._scheduleQuickRedraw();
     return this._last3d;
   }
   async _updateGuide3d(placement){
@@ -5332,9 +5532,130 @@ class DrawingPreviewWidget{
     catch(err){ console.warn("[TC] markup.removeMarkups misslyckades:", err); }
     this._guideMarkupIds = [];
   }
+  /* ---- DEL 1f: Snabbvisning i 3D (se kommentaren vid extractQuickLines) ---- */
+
+  /* Storlek utan kalibrering: pappersformatet (PDF-punkter → mm) × skala 1:N. */
+  async _quickFallbackSize(item, extraScale=1){
+    if(!item || item.kind==="image" || item.kind==="video") return null;
+    const denom = parseFloat(this.el.quickScale3d?.value);
+    if(!(denom>0)) return null;
+    try{
+      const { page } = await ensurePdfDocForItem(item);
+      const vp = page.getViewport({ scale: 1 });
+      const ptToM = 0.0254/72;               // 1 pt = 1/72 tum
+      return { widthM: vp.width*ptToM*denom*extraScale, heightM: vp.height*ptToM*denom*extraScale };
+    }catch(err){
+      console.warn("[TC 3D snabb] kunde inte läsa PDF-sidans storlek:", err);
+      return null;
+    }
+  }
+
+  _setQuickStatus(text){ this.el.quickStatus3d.textContent = text; }
+
+  async _quickShow3d(){
+    if(!tcApi?.markup?.addLineMarkups){
+      this._setQuickStatus("markup.addLineMarkups finns inte i den här Trimble Connect-miljön — snabbvisningen kräver att extensionen körs inne i 3D-vyn.");
+      return;
+    }
+    const item = this._currentItem();
+    if(!item || item.kind==="image" || item.kind==="video"){
+      this._setQuickStatus("Snabbvisningen fungerar bara för PDF-ritningar (inte foton/video).");
+      return;
+    }
+    const btn = this.el.quick3d;
+    btn.disabled = true;
+    try{
+      const cacheKey = `${item.id}|${item.versionId||""}|${item.page||1}`;
+      if(!this._quickCache || this._quickCache.key !== cacheKey){
+        this._setQuickStatus("Läser ut linjerna ur PDF:en…");
+        const data = await extractQuickLines(item);
+        if(!data.segs.length){
+          this._setQuickStatus("Hittade inga linjer i PDF:en — den är troligen skannad (en bild), inte utskriven från CAD.");
+          return;
+        }
+        this._quickCache = { key: cacheKey, ...data };
+      }
+      this._quickShown = true;
+      const res = await this._recompute3d({ updateGuide:false });
+      if(!res){
+        this._setQuickStatus("Kunde inte räkna ut var ritningen ska hamna (se meddelandet längre ner i panelen).");
+        return;
+      }
+      await this._quickRedraw();
+    }catch(err){
+      console.error("[TC 3D snabb] misslyckades:", err);
+      this._setQuickStatus(`Kunde inte visa ritningen: ${describeError(err)}`);
+    }finally{
+      btn.disabled = false;
+    }
+  }
+
+  _scheduleQuickRedraw(){
+    clearTimeout(this._quickTimer);
+    this._quickTimer = setTimeout(() => this._quickRedraw(), 350);
+  }
+
+  /* Ritar om linjerna enligt senaste placeringen. Körs en i taget; kommer
+     en ny begäran medan en ritning pågår görs en till direkt efteråt. */
+  async _quickRedraw(){
+    if(!this._quickShown || !this._quickCache || !this._last3d) return;
+    if(this._quickBusy){ this._quickPending = true; return; }
+    this._quickBusy = true;
+    clearTimeout(this._quickTimer);
+    try{
+      const { widthM, heightM, placement, fallback } = this._last3d;
+      const maxLines = parseInt(this.el.quickDetail3d.value, 10) || 15000;
+      const lines = placeQuickLines(this._quickCache.segs, placement, widthM, heightM, maxLines);
+      const hex = this.el.quickColor3d.value || "#d81b60";
+      const color = { r:parseInt(hex.slice(1,3),16), g:parseInt(hex.slice(3,5),16), b:parseInt(hex.slice(5,7),16), a:255 };
+      const toMm = p => ({ positionX: p.x*1000, positionY: p.y*1000, positionZ: p.z*1000 });
+
+      this._setQuickStatus(`Ritar ${lines.length.toLocaleString("sv-SE")} linjer…`);
+      await this._quickClear3d(false);
+      // Eget id-intervall (guiden: 1e15, zon-guiden: 2e15) så att de aldrig krockar.
+      const baseId = 3_000_000_000_000_000 + (Date.now() % 1_000_000_000) * 100_000;
+      const ids = [];
+      const CHUNK = 2000;                   // mindre anrop = Trimble hinner med, och man ser att det händer
+      for(let i=0;i<lines.length;i+=CHUNK){
+        const batch = lines.slice(i, i+CHUNK).map(([a,b],k) => ({ id: baseId+i+k, start: toMm(a), end: toMm(b), color }));
+        const created = await tcApi.markup.addLineMarkups(batch);
+        (Array.isArray(created) && created.length ? created : batch).forEach(m => ids.push(m.id));
+        this._quickIds = ids;
+        if(lines.length > CHUNK) this._setQuickStatus(`Ritar linjer… ${Math.min(i+CHUNK, lines.length).toLocaleString("sv-SE")} / ${lines.length.toLocaleString("sv-SE")}`);
+      }
+      const c = this._quickCache;
+      const reduced = c.segs.length > lines.length ? ` (de ${lines.length.toLocaleString("sv-SE")} längsta av ${c.segs.length.toLocaleString("sv-SE")} — höj "Detalj" för fler)` : "";
+      this._setQuickStatus(`✓ ${lines.length.toLocaleString("sv-SE")} linjer visas i 3D${reduced}. `
+        + `Storlek ${widthM.toFixed(1)} × ${heightM.toFixed(1)} m${fallback ? ` (från pappersformat och skala 1:${this.el.quickScale3d.value} — kalibrera för exakt storlek)` : " (kalibrerad)"}. `
+        + (this.el.quickLive3d.checked ? "Följer reglagen." : ""));
+    }catch(err){
+      console.error("[TC 3D snabb] kunde inte rita linjer:", err);
+      this._setQuickStatus(`markup.addLineMarkups gav ett fel: ${describeError(err)}`);
+    }finally{
+      this._quickBusy = false;
+      if(this._quickPending){ this._quickPending = false; this._quickRedraw(); }
+    }
+  }
+
+  async _quickClear3d(userAction){
+    if(userAction){
+      this._quickShown = false;
+      clearTimeout(this._quickTimer);
+    }
+    const ids = this._quickIds || [];
+    this._quickIds = [];
+    if(ids.length && tcApi?.markup?.removeMarkups){
+      try{
+        for(let i=0;i<ids.length;i+=5000) await tcApi.markup.removeMarkups(ids.slice(i, i+5000));
+      }catch(err){ console.warn("[TC 3D snabb] removeMarkups misslyckades:", err); }
+    }
+    if(userAction) this._setQuickStatus("Linjerna är borttagna.");
+  }
+
   async _download3d(){
     const res = await this._recompute3d({ updateGuide:false });
     if(!res) return;
+    if(res.fallback){ alert('Ritningen är inte kalibrerad. Använd verktyget "Kalibrera" först (nedladdning/uppladdning kräver verklig storlek) — eller använd "⚡ Visa ritningen i 3D", som klarar sig med skala 1:N.'); return; }
     const baseName = (res.item.name || "ritning").replace(/\.[a-z0-9]+$/i, "");
     const mode = this.el.mode3d.value; // "ifc" | "pointcloud" | "vector"
 
@@ -5399,6 +5720,7 @@ class DrawingPreviewWidget{
     }
     const res = await this._recompute3d({ updateGuide:false });
     if(!res){ console.warn("[TC 3D] avbröt: _recompute3d gav inget resultat (troligen ingen kalibrering)."); return; }
+    if(res.fallback){ alert('Ritningen är inte kalibrerad. Använd verktyget "Kalibrera" först (uppladdning kräver verklig storlek) — eller använd "⚡ Visa ritningen i 3D", som klarar sig med skala 1:N.'); return; }
     // window.confirm() togs bort härifrån (2026-09-11): en tidigare version
     // hade en bekräftelseruta här, men om Trimble Connects iframe skulle
     // blockera/sandboxa JS-dialogrutor kunde confirm() tänkas returnera
@@ -5469,6 +5791,11 @@ class DrawingPreviewWidget{
     this.el.download3d.addEventListener("click", e=>{ e.stopPropagation(); this._download3d(); });
     this.el.upload3d.addEventListener("click", e=>{ e.stopPropagation(); this._upload3d(); });
     this.el.cancel3d.addEventListener("click", e=>{ e.stopPropagation(); this._close3dPanel(); });
+
+    this.el.quick3d.addEventListener("click", e=>{ e.stopPropagation(); this._quickShow3d(); });
+    this.el.quickClear3d.addEventListener("click", e=>{ e.stopPropagation(); this._quickClear3d(true); });
+    [this.el.quickDetail3d, this.el.quickColor3d, this.el.quickScale3d].forEach(el=>
+      el.addEventListener("change", ()=>{ if(this._quickShown) this._quickShow3d(); else if(el===this.el.quickScale3d) onFieldChange(); }));
   }
 
   // Lägger till en nykopplad bilaga (uppladdad ELLER länkad från befintligt
@@ -6144,6 +6471,13 @@ class DrawingPreviewWidget{
       download3d: document.getElementById("dp-3d-download"),
       upload3d: document.getElementById("dp-3d-upload"),
       cancel3d: document.getElementById("dp-3d-cancel"),
+      quick3d: document.getElementById("dp-3d-quick"),
+      quickClear3d: document.getElementById("dp-3d-quick-clear"),
+      quickLive3d: document.getElementById("dp-3d-quick-live"),
+      quickDetail3d: document.getElementById("dp-3d-quick-detail"),
+      quickColor3d: document.getElementById("dp-3d-quick-color"),
+      quickScale3d: document.getElementById("dp-3d-quick-scale"),
+      quickStatus3d: document.getElementById("dp-3d-quick-status"),
     };
   }
   _bindEvents(){
